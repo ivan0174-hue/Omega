@@ -1,0 +1,12 @@
+# build outputs
+*.o
+*.d
+/omega
+/omega-headless
+pi/*.elf
+pi/*.lst
+pi/*.map
+pi/kernel8-rpi4.img
+# never commit Kickstart ROMs (copyrighted)
+*.rom
+KICK.ROM

@@ -35,6 +35,10 @@ void cpu_instr_callback();
 void cpu_init();
 void cpu_execute();
 
+// Amiga 500 timing: 68000 at 7.09 MHz = 2 cycles per colour clock
+#define CPU_CYCLES_PER_CCK 2
+extern unsigned long long cpuCyclesTotal;
+
 void checkInterrupt(Chipset_t*);
 void system_loadState(uint32_t*);
 

@@ -1,0 +1,17 @@
+# Omega - Amiga emulator, bare metal on Raspberry Pi 4 / 400
+arm_64bit=1
+kernel_address=0x80000
+kernel=kernel8-rpi4.img
+armstub=armstub8-rpi4.bin
+max_framebuffers=2
+initial_turbo=0
+
+# show a picture even if the monitor is switched on after the Pi
+hdmi_force_hotplug=1
+disable_overscan=1
+
+# Omega draws opaque pixels; never treat the framebuffer alpha as transparency
+framebuffer_ignore_alpha=1
+
+# HDMI mode with sound (not DVI); sound is sent on HDMI0, the port next to the power socket
+hdmi_drive=2

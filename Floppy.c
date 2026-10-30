@@ -13,12 +13,11 @@
 //  Mozilla Public License, v. 2.0. If a copy of the MPL was not distributed
 //  with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+#include <string.h>
 #include "Floppy.h"
 #include "Chipset.h"
 #include "Memory.h"
 
-#include <unistd.h>
-#include <fcntl.h>
 
 
 void encodeBlock(uint8_t* source, uint8_t* destination,int size){
@@ -46,11 +45,13 @@ uint8_t addClockBits(uint8_t previous, uint8_t value) {
     return value | cBits;
 }
 
-void ADF2MFM(int fd, uint8_t* mfm){
+// Convert an in-memory ADF image to MFM. The host layer is responsible for loading the file,
+// so this module has no dependency on POSIX file I/O (needed for bare metal).
+void ADF2MFM(const uint8_t* adf, int size, uint8_t* mfm){
     
-    int size =(int) lseek(fd, 0, SEEK_END);
-    
-    //printf("FloppySize: %d\n",size);
+    if(adf == NULL || size <= 0){
+        return;
+    }
     
     //512 bytes per sector
     int sectors = size/512;
@@ -58,17 +59,13 @@ void ADF2MFM(int fd, uint8_t* mfm){
     //22 sectors per track (each side 11 sectors)
     int tracks = (sectors / 22);
     
-    //each track is 12798 bytes in size, multiplied by 2 because there are 2 sides
-    //int mfmSize = tracks * (12798 * 2);
-    
-    uint8_t* adf = malloc(size);
-    // uint8_t mfm[mfmSize];
+    //the MFM buffer holds at most 82 cylinders; larger images would overflow it
+    if(tracks > 82){
+        printf("ADF too large (%d cylinders), truncating to 82\n",tracks);
+        tracks = 82;
+    }
     
     uint8_t lowlevelSector[544]; //bytes per low level sector
-    
-    lseek(fd, 0, SEEK_SET);
-    read(fd, adf, size);
-    
     
     int count = 0;
     int s = 0;
@@ -223,7 +220,6 @@ void ADF2MFM(int fd, uint8_t* mfm){
         
     }
     //printf("loaded");
-    free(adf);
 }
 //*******************************
 
@@ -267,7 +263,17 @@ uint8_t floppyDataRead(){ //this function should be called by the DMA
 }
 
 
+// set by floppyInit() when an image has been loaded for the drive
+static int imageLoaded[4] = {0,0,0,0};
+
 void floppyInsert(int drive){
+    
+    if(drive < 0 || drive > 3 || !imageLoaded[drive]){
+        //no disk image for this drive: inserting an empty disk would make
+        //Kickstart retry reading it forever with the motor running
+        printf("No disk image for df%d:\n",drive);
+        return;
+    }
 
     if(df[drive].idMode !=0){
         //Only Vaild drives have an ID Mode == 0 
@@ -284,14 +290,87 @@ void floppyInsert(int drive){
     
 }
 
-uint8_t* floppyInit(int drive){
+static int attached[4] = {0,0,0,0};
+
+// The drive is connected to the Amiga but has no disk image yet
+void floppyAttach(int drive){
+    if(drive < 0 || drive > 3) return;
+    attached[drive] = 1;
+    imageLoaded[drive] = 0;
     df[drive].idMode = -1;
     df[drive].index = 0;
     df[drive].cylinder = 0;
     df[drive].side = 0;
-    df[driveSelected].pra  &= 0xFB;      // no disk;
-    df[driveSelected].pra  &= 0xEF;     //cylinder 0
+    df[drive].pra  &= 0xFB;      // no disk
+    df[drive].pra  &= 0xEF;      // cylinder 0
+}
+
+// Attach the drive and return its MFM buffer; the caller fills it with an image
+uint8_t* floppyInit(int drive){
+    floppyAttach(drive);
+    imageLoaded[drive] = 1;
     return df[drive].mfmData;
+}
+
+// Load a new image while the emulator runs (the disk must be out of the drive).
+// Does not reset the drive identification, so it can be used at any time.
+int floppyLoadImage(int drive, const uint8_t* adf, int size){
+    if(drive < 0 || drive > 3 || (df[drive].pra & 0x04)){
+        return 0;
+    }
+    memset(df[drive].mfmData, 0, sizeof(df[drive].mfmData));
+    ADF2MFM(adf, size, df[drive].mfmData);
+    imageLoaded[drive] = 1;
+    return 1;
+}
+
+// Machine reset: the disks stay in the drives, the drive electronics restart
+// (motor off, not ready, identification sequence again on the next motor-off)
+void floppyReset(void){
+    for(int i=0;i<4;++i){
+        if(!attached[i]){
+            continue;
+        }
+        df[i].idMode = -1;
+        df[i].index = 0;
+        df[i].side = 0;
+        df[i].prb = 0xFF;
+        df[i].pra = (uint8_t)((df[i].pra & 0x04) | 0x20 | 0x08);   // keep disk-in, not ready
+        if(df[i].cylinder == 0){
+            df[i].pra &= 0xEF;      // track 0
+        }else{
+            df[i].pra |= 0x10;
+        }
+    }
+    driveSelected = 0;
+    floppySync = 0;
+}
+
+int floppyHasImage(int drive){
+    return drive >= 0 && drive <= 3 && imageLoaded[drive];
+}
+
+int floppyIsInserted(int drive){
+    return drive >= 0 && drive <= 3 && (df[drive].pra & 0x04) != 0;
+}
+
+// Insert the loaded image; returns 0 if the drive is not ready to accept it yet
+// (during the first moments after reset the drive is being identified)
+int floppyInsertDisk(int drive){
+    if(!floppyHasImage(drive) || df[drive].idMode != 0){
+        return 0;
+    }
+    if(!floppyIsInserted(drive)){
+        floppyInsert(drive);
+    }
+    return 1;
+}
+
+void floppyEjectDisk(int drive){
+    if(floppyIsInserted(drive)){
+        df[drive].pra &= 0xFB;
+        printf("Disk ejected from df%d:\n",drive);
+    }
 }
 
 void floppyState(){

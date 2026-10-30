@@ -380,8 +380,8 @@ typedef struct{
     uint16_t bplcon1;
     uint16_t bplcon2;
     uint16_t bplcon3;
-    uint16_t bpl1mod;
-    uint16_t bpl2mod;
+    int16_t  bpl1mod;    // in words, signed (games often use negative modulos)
+    int16_t  bpl2mod;
     uint16_t reserved14;
     uint16_t reserved15;
     uint16_t bpl1dat;
@@ -550,6 +550,14 @@ typedef struct{
 
 extern Chipset_t  chipset;
 extern Internal_t internal;
+
+// All chipset DMA (bitplanes, sprites, copper, blitter, disk) can only reach chip RAM.
+// Masking every DMA index makes garbage pointer values wrap like real hardware
+// instead of reading/writing outside the emulator's memory array.
+extern uint32_t chipRamMask;    // Memory.c: DMA can only address the chip RAM fitted
+#define CHIPW_MASK (chipRamMask >> 1)   // word index mask
+#define CHIPB_MASK (chipRamMask)        // byte index mask
+#define CHIPW(index) internal.chipramW[(uint32_t)(index) & CHIPW_MASK]
 
 void ChipsetInit();
 

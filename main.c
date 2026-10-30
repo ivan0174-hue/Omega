@@ -11,348 +11,114 @@
 //  This Source Code Form is subject to the terms of the
 //  Mozilla Public License, v. 2.0. If a copy of the MPL was not distributed
 //  with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
-
-#include <unistd.h>
-#include <fcntl.h>
+//
+//  2026 revision: platform neutral. Files are loaded through hostLoadFile()
+//  and events through hostPollEvents(), so this file needs no SDL and no
+//  POSIX calls. Host events are now polled once per emulated frame instead of
+//  every 200 colour clocks (~300 times per frame).
 
 #include <stdio.h>
-#include <SDL2/SDL.h>
+#include <stdint.h>
+
 #include "CPU.h"
-
-
 #include "Host.h"
 #include "Memory.h"
 #include "DMA.h"
 #include "Chipset.h"
 #include "CIA.h"
 #include "Floppy.h"
-
 #include "m68k.h"
-
-#define PAL 1  // PAL  system
-//define PAL 0 // NTSC system
 
 int screenWidth = 640;
 int screenHeight = 200;
 
+int disass = 0; //set to any value greater than 0 to turn on the disassembler
 
-int disass = 0; //set to any value greter than 0 to turn on dissassembler
+#define ROM_SIZE_MAX (512*1024)
+#define ADF_SIZE_MAX (82*22*512)    // the largest image the MFM buffer can hold
 
+static uint8_t adfBuffer[ADF_SIZE_MAX + 1];
 
-
-//run the CPU in a seprate thread... need to sort out interrupts first...
-int thd68k(void* data){
-    
-    SDL_Delay(500);
-    printf("CPU Running\n");
-    
-    while(1){
-        cpu_execute();
-        //SDL_Delay(1);
-    }
-    
-}
-
-
-
-
-int main(int argc, char * argv[]) {
-    
-    
-    //load rom from disk if need be
-    int fd=0;
-    
-    if(argc>1){
-        fd = open(argv[1],O_RDWR);
-    }else{
-        fd = open("/Users/Shared/uae/roms/Kick2.rom",O_RDONLY); //"/Users/Shared/uae/roms/Kick12.rom" "/Users/Shared/uae/roms/DiagROM"  "/Users/Shared/uae/roms/Kick3.rom"
-        if(fd<1){
-            printf("Usage: zorro <kickstart.rom> <raw adf image>\n");
+static int loadKickstart(const char* path){
+    long size = hostLoadFile(path, &low16Meg[0xF80000], ROM_SIZE_MAX);
+    if(size <= 0){
+        printf("Can't read Kickstart ROM %s\n", path);
         return 0;
-        }
-        
     }
-    
-    
-    int size = (int)lseek(fd, 0, SEEK_END);
-    
-    //hack to load 256k roms
-    if(size==0x40000){
-        lseek(fd, 0, SEEK_SET);
-        read(fd, &low16Meg[0xF80000], size);
-        lseek(fd, 0, SEEK_SET);
-        read(fd, &low16Meg[0xFC0000], size);
-    }else{
-    
-        lseek(fd, 0, SEEK_SET);
-        read(fd, &low16Meg[0xF80000], size);
-    }
-    
-    close(fd);
-    fd=0;
-    
 
-    if(low16Meg[0xF80000]==0x11){
-        printf("ROM loaded\n");
-    }else{
+    if(size == 0x40000){
+        // 256K ROMs are mirrored at 0xF80000 and 0xFC0000
+        for(long i=0;i<size;++i){
+            low16Meg[0xFC0000 + i] = low16Meg[0xF80000 + i];
+        }
+    }else if(size != 0x80000){
+        printf("Unexpected ROM size %ld (need 256K or 512K)\n", size);
+        return 0;
+    }
+
+    if(low16Meg[0xF80000] != 0x11){
         printf("Not an Amiga ROM\n");
         return 0;
     }
-    
-    //Floppy disk
-    if(argc>2){
-        fd = open(argv[2],O_RDWR);
-        printf("%s\n",argv[2]);
-    }else{
-        
-        //fd = open("/Users/Shared/uae/WORKBENCH/WB-1.3.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/WORKBENCH/WB-2_05.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/Blitz2-1.ADF",O_RDONLY);
-        fd = open("/Users/Shared/uae/DosUae/Blitz2-1-2.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/DLXP4.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/DISK1.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/Fright Night.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/JUGGLER.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/amiga_500a_Tutorial_Disk.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/CuAmiga15.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/LEMM1.ADF",O_RDONLY);
-        //fd =open("/Users/Shared/uae/ADF/Defender of the Crown (1986)(Mindscape)(Disk 1 of 2).adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/ADF/AmigaTestKit.adf",O_RDONLY);
-    }
-    
-    //fd = open("/Users/Shared/uae/WORKBENCH/raw3.adf",O_RDONLY);
-    
- 
-    if(fd<1){
-        printf("No disk in DF0:\n");
-    }else{
-        
-        //int size =(int) lseek(fd, 0, SEEK_END);
-        //lseek(fd, 2004, SEEK_SET);
-        //read(fd, floppyInit(0), size);
-        
-        ADF2MFM(fd, floppyInit(0));
-        close(fd);
-        printf("DF0: Loaded (press F1 to insert disk)\n");
-    }
-    fd=0;
-    
-    //DF1
-    //Floppy disk
-    if(argc>3){
-        printf("%s\n",argv[3]);
-        fd = open(argv[3],O_RDWR);
-    }else{
-        
-        //fd = open("/Users/Shared/uae/WORKBENCH/WB-1.3.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/WORKBENCH/EX-2_05.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/DLXP4.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/DISK1.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/Fright Night.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/JUGGLER.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/amiga_500a_Tutorial_Disk.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/af025_1991_08_d025.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/CuAmiga15.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/WORKBENCH/EX-1_3.adf",O_RDONLY);
-        fd = open("/Users/Shared/uae/DosUae/Blitz2-2.ADF",O_RDONLY);
-        //fd =open("/Users/Shared/uae/ADF/Defender of the Crown (1986)(Mindscape)(Disk 2 of 2).adf",O_RDONLY);
-    }
-    
-    
-    if(fd<1){
-        printf("No disk in DF1:\n");
-    }else{
-        ADF2MFM(fd,floppyInit(1));
-        close(fd);
-        printf("DF1: Loaded (press F2 to insert disk)\n");
-    }
-    fd=0;
-    
-    
-    //DF2
-    //Floppy disk
-    if(argc>4){
-        printf("%s\n",argv[4]);
-        fd = open(argv[4],O_RDWR);
-    }else{
-        
-        //fd = open("/Users/Shared/uae/WORKBENCH/WB-1.3.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/DLXP4.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/DISK1.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/Fright Night.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/JUGGLER.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/amiga_500a_Tutorial_Disk.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/af025_1991_08_d025.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/CuAmiga15.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/WORKBENCH/EX-1_3.adf",O_RDONLY);
-        fd = open("/Users/Shared/uae/DosUae/Blitz2-3.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/ADF/Pro Tracker v2.3 (1993)(Noxious).adf",O_RDONLY);
-        
-    }
-    
-    
-    if(fd<1){
-        printf("No disk in DF2:\n");
-    }else{
-        ADF2MFM(fd,floppyInit(2));
-        close(fd);
-        printf("DF2: Loaded (press F3 to insert disk)\n");
-    }
-    fd=0;
-    
-    //DF2
-    //Floppy disk
-    if(argc>5){
-        printf("%s\n",argv[5]);
-        fd = open(argv[5],O_RDWR);
-    }else{
-        
-        //fd = open("/Users/Shared/uae/WORKBENCH/WB-1.3.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/DLXP4.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/DISK1.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/Fright Night.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/JUGGLER.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/amiga_500a_Tutorial_Disk.ADF",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/af025_1991_08_d025.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/DosUae/CuAmiga15.adf",O_RDONLY);
-        //fd = open("/Users/Shared/uae/WORKBENCH/EX-1_3.adf",O_RDONLY);
-        fd = open("/Users/Shared/uae/DosUae/Blitz2-4.ADF",O_RDONLY);
-    }
-    
-    
-    if(fd<1){
-        printf("No disk in DF3:\n");
-    }else{
-        ADF2MFM(fd,floppyInit(3));
-        close(fd);
-        printf("DF3: Loaded (press F4 to insert disk)\n");
-    }
-    fd=0;
-    
-    //setup emulator
-    hostInit();
-    cpu_init();
-    ChipsetInit();
-    
-    //SDL_Thread* clockThread = SDL_CreateThread(thdClock, "Clock", &sec);
-    //SDL_DetachThread(clockThread);
-    
-    //cpuWait = SDL_CreateSemaphore(0);
-    //SDL_Thread* cpuThread = SDL_CreateThread(thd68k, "CPU", 0);
-    //SDL_DetachThread(cpuThread);
-    
-    
-    
-    Chipset_t* chipView = &chipset;
-    Internal_t* internalView = &internal;
-    
-    
-    printf("\nEntering main loop\n");
-    int running = 1;
-    while(running){
-        
-
-        
-        while (SDL_PollEvent(&host.event)) {
-            switch (host.event.type) {
-                case SDL_QUIT:
-                    running=0;
-                    break;
-                    
-                case SDL_KEYUP:
-                    
-                    
-                    if(host.event.key.keysym.sym==SDLK_F1){
-                        //Capture F1
-                        break;
-                    }
-                    
-                    if(host.event.key.keysym.sym==SDLK_F2){
-                        //Capture F2
-                        break;
-                    }
-                    
-                    if(host.event.key.keysym.sym==SDLK_F3){
-                        //Capture F3
-                        break;
-                    }
-                    
-                    if(host.event.key.keysym.sym==SDLK_F4){
-                        //Capture F4
-                        break;
-                    }
-                    
-                    if(host.event.key.keysym.sym==SDLK_F5){
-                        //Capture F5
-                        break;
-                    }
-                    
-                    
-                    releaseKey(host.event.key.keysym.sym);
-                    break;
-                    
-                case SDL_KEYDOWN:
-                    
-                    if(host.event.key.keysym.sym==167){
-                        running = 0;
-                    }
-                    
-                    if(host.event.key.keysym.sym==SDLK_F1){
-                            floppyInsert(0);
-                        break;
-                    }
-                    
-                    if(host.event.key.keysym.sym==SDLK_F2){
-                            floppyInsert(1);
-                        break;
-                    }
-                    
-                    if(host.event.key.keysym.sym==SDLK_F3){
-                        floppyInsert(2);
-                        break;
-                    }
-                    
-                    if(host.event.key.keysym.sym==SDLK_F4){
-                        floppyInsert(3);
-                        break;
-                    }
-                    
-                    if(host.event.key.keysym.sym==SDLK_F5){
-                        toggleLEDs();
-                        break;
-                    }
-                    
-                    pressKey(host.event.key.keysym.sym);
-                    break;
-                    
-                default:
-                    break;
-            }
-        }
-    
-
-        
-        for(int cpuCycles =0;cpuCycles<200;++cpuCycles){
-            
-
-            dma_execute();
-            cpu_execute();
-
-        }
-        
-        
-    }
-    
-    
-    
-    
-    SDL_Quit();
-    return 0;
+    printf("ROM loaded\n");
+    return 1;
 }
 
+static void loadDisk(int drive, const char* path){
+    long size = hostLoadFile(path, adfBuffer, sizeof(adfBuffer));
+    if(size <= 0){
+        printf("No disk in DF%d: (%s)\n", drive, path);
+        return;
+    }
+    if(size > ADF_SIZE_MAX){
+        printf("DF%d: %s is larger than a DD floppy, truncated\n", drive, path);
+        size = ADF_SIZE_MAX;
+    }
+    ADF2MFM(adfBuffer, (int)size, floppyInit(drive));
+    printf("DF%d: %s loaded (press F%d to insert disk)\n", drive, path, drive+1);
+}
 
+int main(int argc, char * argv[]) {
 
+    if(argc < 2){
+        printf("Usage: omega <kickstart.rom> [df0.adf] [df1.adf] [df2.adf] [df3.adf]\n");
+        return 1;
+    }
 
+    renderInit();
 
+    if(!loadKickstart(argv[1])){
+        return 1;
+    }
 
+    floppyAttach(0);    // the internal drive is always there, even without a disk
+    for(int drive=0; drive<4 && argc > drive+2; ++drive){
+        loadDisk(drive, argv[drive+2]);
+    }
 
+    if(!hostInit()){
+        return 1;
+    }
+    cpu_init();
+    ChipsetInit();
+
+    printf("\nEntering main loop\n");
+
+    int running = 1;
+    while(running){
+
+        // run until the chipset reaches the next vertical blank
+        int frame = host.vblCount;
+        while(host.vblCount == frame){
+            for(int cycles=0; cycles<200; ++cycles){
+                dma_execute();
+                cpu_execute();
+            }
+        }
+
+        running = hostPollEvents();
+    }
+
+    hostShutdown();
+    return 0;
+}

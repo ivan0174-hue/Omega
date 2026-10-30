@@ -53,6 +53,13 @@ void floppyEject();
 uint8_t floppyDataRead();
 void floppyInsert(int);
 uint8_t* floppyInit(int);   // returns the mfm data buffer
+void floppyAttach(int drive);
+void floppyReset(void);                                    // machine reset (disks stay in)                              // drive present, no disk
+int  floppyLoadImage(int drive, const uint8_t* adf, int size); // load while running (disk must be out)
+int  floppyHasImage(int drive);
+int  floppyIsInserted(int drive);
+int  floppyInsertDisk(int drive);                          // 0 = drive not ready yet, retry later
+void floppyEjectDisk(int drive);
 void floppyIndexReset();
 
 void floppyState();     //Get the drive state for the CIA
@@ -61,7 +68,7 @@ void floppySetState();  //Set the Drive State for the CIA
 
 void encodeBlock(uint8_t* source, uint8_t* destination,int size);
 uint8_t addClockBits(uint8_t previous, uint8_t value);
-void ADF2MFM(int fd, uint8_t* mfm);
+void ADF2MFM(const uint8_t* adf, int size, uint8_t* mfm);
 
 
 

@@ -22,6 +22,7 @@ int copperExecute();
 int blitterExecute();
 
 void waitFreeSlot();
+extern volatile int cpuWait;
 
 void evenCycle(void);
 void oddCycle(void);

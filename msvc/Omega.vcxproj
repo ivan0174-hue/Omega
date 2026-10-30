@@ -28,7 +28,9 @@
     <ClCompile Include="..\DMA.c" />
     <ClCompile Include="..\Floppy.c" />
     <ClCompile Include="..\Gayle.c" />
-    <ClCompile Include="..\Host.c" />
+    <ClCompile Include="..\HostSDL.c" />
+    <ClCompile Include="..\Input.c" />
+    <ClCompile Include="..\Render.c" />
     <ClCompile Include="..\m68kcpu.c" />
     <ClCompile Include="..\m68kdasm.c" />
     <ClCompile Include="..\m68kopac.c" />
@@ -50,6 +52,7 @@
     <ClInclude Include="..\Floppy.h" />
     <ClInclude Include="..\Gayle.h" />
     <ClInclude Include="..\Host.h" />
+    <ClInclude Include="..\HostHarness.h" />
     <ClInclude Include="..\image.h" />
     <ClInclude Include="..\Kick13.h" />
     <ClInclude Include="..\m68k.h" />

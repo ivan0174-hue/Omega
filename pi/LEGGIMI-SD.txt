@@ -1,0 +1,96 @@
+OMEGA - emulatore Amiga bare metal per Raspberry Pi 4 / Pi 400
+==============================================================
+
+Si comporta come un Amiga 500 PAL vero: processore 68000 a 7,09 MHz,
+schermo PAL a 50 Hz (256 righe). All'accensione i drive sono vuoti e
+compare la schermata con la mano che chiede il dischetto. Premi F1, scegli
+un file .adf dall'elenco e l'Amiga parte, con i tempi di un A500 (il
+Workbench 1.3 compare dopo circa 45 secondi, la lettura del floppy pero'
+e' piu' veloce dell'originale).
+
+PREPARAZIONE
+1. Formatta una scheda micro SD in FAT32.
+2. Copia TUTTI i file di questa cartella nella radice della scheda.
+3. Aggiungi nella radice della scheda:
+     KICK.ROM   la ROM Kickstart 1.3 (o 1.2), file da 256K o 512K.
+                Se non si chiama cosi', viene usato il primo file .rom
+                da 256K/512K che si trova nella radice.
+                Le 2.x e 3.x non arrivano ancora al Workbench.
+                E' protetta da copyright: usa la tua, per esempio
+                quella inclusa in Amiga Forever.
+     I dischetti: tutti i file .adf che vuoi, con il loro nome normale
+                (anche lungo, anche dentro cartelle). Non vanno rinominati.
+4. Collega tastiera e mouse USB, il monitor sulla porta HDMI 0
+   (quella vicino all'alimentazione), inserisci la scheda e accendi.
+
+DISCHETTI
+  F1 / F2 / F3 / F4   apre l'elenco dei dischi per DF0: / DF1: / DF2: / DF3:
+                      (l'emulazione resta in pausa mentre l'elenco e' aperto)
+  Su / Giu            scegli il file           Pag Su / Pag Giu  pagina
+  Invio               inserisci il disco (o entra nella cartella)
+  una lettera         salta al primo nome che inizia con quella lettera
+  Backspace           torna alla cartella superiore
+  Esc (o di nuovo F1) chiude l'elenco senza cambiare nulla
+  "<< nessun disco >>" in cima all'elenco estrae il disco dal drive
+
+Per cambiare disco (giochi su piu' dischetti) premi F1 e scegli il nuovo
+file: il vecchio disco viene tolto e il nuovo inserito dopo 3 secondi,
+cosi' l'Amiga si accorge del cambio, proprio come con un floppy vero.
+
+IMPOSTAZIONI (F5)
+  Freccia su/giu' sceglie la voce, sinistra/destra cambia il valore,
+  "Salva" applica. Le scelte sono salvate nel file OMEGA.CFG sulla scheda.
+  - Chip RAM (256 KB, 512 KB, 1 MB, 2 MB) e slow RAM (da nessuna fino a
+    1,75 MB). Predefinito: 512 KB + 512 KB, come un Amiga 500 con
+    l'espansione A501. Cambiare la memoria riavvia l'Amiga, i dischi
+    restano nei drive.
+  - Audio: HDMI (predefinito), Jack cuffie, Spento.
+    HDMI: il suono esce dal TV/monitor. Usa la presa micro-HDMI vicina
+    all'alimentazione (HDMI0); il TV/monitor deve avere gli altoparlanti.
+    Jack: l'uscita cuffie da 3,5 mm del Pi 4 (il Pi 400 non ce l'ha).
+  - Stereo: 100% e' come l'Amiga vero (alcuni strumenti solo a sinistra,
+    altri solo a destra); 70% (predefinito) e 50% avvicinano i canali,
+    piu' piacevole in cuffia; mono.
+  Il filtro audio dell'Amiga 500 e' emulato: si attiva insieme alla luce
+  di accensione piena, come sull'originale.
+  - "Joystick, gamepad e tasti...": vedi sotto.
+
+JOYSTICK E GAMEPAD
+  Gamepad USB (Xbox 360/One con filo, PlayStation 3/4, Switch Pro, 8BitDo e
+  molti gamepad generici): basta collegarlo, funziona come joystick nella
+  porta 2, quella usata da quasi tutti i giochi.
+    croce o levetta sinistra = direzioni
+    A, X, R1, R2 = fuoco
+    B, Y, L1, L2 = secondo pulsante, oppure "su" (salto) o fuoco: si sceglie
+                   nel menu (comodo nei platform dove si salta con "su")
+    Start  = un tasto dell'Amiga a scelta (predefinito Spazio: molti giochi
+             partono con Spazio o F1)
+    Select = apre il menu dischi di DF0: (nei menu: croce = muovi,
+             A = conferma, B = indietro)
+  Un secondo gamepad puo' andare nella porta 1 al posto del mouse (giochi
+  per due giocatori): opzione "Porta 1" nel menu.
+
+  Joystick da tastiera: nel menu F5 > "Joystick, gamepad e tasti..."
+  accendi "Joystick da tastiera" e, se vuoi, scegli i tasti: vai sulla
+  riga (Su, Giu', Sinistra, Destra, Fuoco, Fuoco 2), premi Invio e poi il
+  tasto nuovo. Predefiniti: frecce, Ctrl destro = fuoco, Alt Gr = fuoco 2.
+  Mentre e' acceso quei tasti fanno solo da joystick (non arrivano
+  all'Amiga): spegnilo per i giochi che usano la tastiera.
+  "Salva" memorizza tutto in OMEGA.CFG.
+
+ALTRI TASTI
+  F6-F10          tasti funzione Amiga
+  F11 o Ins       HELP
+  Pag Su/Pag Giu  tasti Amiga sinistro/destro (oltre ai tasti Windows)
+  Ctrl + Amiga + Amiga   reset
+  F12             salva un'istantanea (SNAP0001.BIN, SNAP0002.BIN, ...) sulla
+                  scheda: serve per la diagnosi dei problemi di grafica
+
+BARRA IN FONDO ALLO SCHERMO
+  riga 1: fotogrammi al secondo (~50), carico e temperatura della CPU,
+          tastiera e mouse rilevati
+  riga 2: il disco presente in ciascun drive
+Il LED verde del Pi si accende quando "gira" il floppy.
+
+Se lo schermo mostra un messaggio di errore all'avvio, di solito manca
+la ROM Kickstart nella radice della scheda.

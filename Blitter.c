@@ -105,6 +105,24 @@ int OblitterExecute(){
 
 //********************* BLITER SECTION *****************************
 
+// Area fill (HRM ch.6): bits are processed from bit 0 (rightmost pixel) to bit 15.
+// The fill carry toggles on every 1 bit of the logic output.
+//  inclusive (IFE): out = in | carry  -> both edges are kept
+//  exclusive (EFE): out = in ^ carry  -> the left edge is removed
+// The carry continues across the words of a line and restarts from FCI on every line.
+static uint16_t blitterFill(uint16_t data, int* carry, int exclusive){
+    uint16_t out = 0;
+    int fc = *carry;
+    for(int i=0;i<16;++i){
+        int bit = (data >> i) & 1;
+        int o = exclusive ? (bit ^ fc) : (bit | fc);
+        out |= (uint16_t)(o << i);
+        fc ^= bit;
+    }
+    *carry = fc;
+    return out;
+}
+
 uint16_t logicFunction(int minterm,uint16_t wordA, uint16_t wordB, uint16_t wordC){
     
     //Not section
@@ -154,258 +172,102 @@ void blitter_execute(Chipset_t* chipset){
         
         
         if(chipset->bltcon1 & 1){
-            //Line Mode
-            
-            //printf("Blitter Line Mode\n");
-            
-            int octCode = (chipset->bltcon1 >> 2) & 7;
-            int length = chipset->bltsizv;
-            int inc1 = chipset->bltamod; // 4(dy - dx)
-            int D = (int16_t)chipset->bltapt;// start value of 4dy - 2dx
-            uint16_t* chipramW = internal.chipramW;
-            
-            int planeAddr = chipset->bltcpt & 0x1FFFFE;//word address
-            
-            int planeMod  = chipset->bltcmod;
-            int inc2 = chipset->bltbmod;// 4dy
-            int d=0;
-            
-            int startPixel = chipset->bltcon0 >>12;
-            
-            int oneDot = (chipset->bltcon1 >>1) & 1;    // I don't support one dot mode yet
-            
-            if(oneDot==1){
-                printf("No Single pixel per H-line mode yet\n");
+            //Line Mode - follows the hardware step by step (as documented in the
+            //HRM and implemented by UAE):
+            //  BLTCON0: ASH = start pixel in the word, minterm (CA normal, 4A XOR)
+            //  BLTCON1: BSH = texture start, SIGN, SUD/SUL/AUL = octant, SING = one dot
+            //  BLTAPTL = 4dy-2dx, BLTAMOD = 4(dy-dx), BLTBMOD = 4dy, BLTCMOD = width
+            //  BLTSIZV = length in pixels
+            //One-dot mode (only the first pixel of every row is written) is what
+            //filled vector polygons rely on; it was missing before, so the area
+            //fill leaked across the screen (e.g. State of the Art).
+            uint16_t con0 = chipset->bltcon0;
+            uint16_t con1 = chipset->bltcon1;
+            int minterm  = con0 & 255;
+            int ashift   = con0 >> 12;
+            int sud = con1 & 0x10, sul = con1 & 0x08, aul = con1 & 0x04;
+            int sing = con1 & 0x02;
+            int sign = (con1 & 0x40) != 0;
+            int16_t error = (int16_t)chipset->bltapt;
+            int16_t amod = chipset->bltamod;
+            int16_t bmod = chipset->bltbmod;
+            int cmod = chipset->bltcmod;
+            int length = chipset->bltsizv ? chipset->bltsizv : 1024;
+
+            int bshift = con1 >> 12;
+            uint16_t texture = chipset->bltbdat;
+            texture = (uint16_t)((texture >> bshift) | (texture << ((16 - bshift) & 15)));
+            uint16_t adat = chipset->bltadat & chipset->bltafwm;
+
+            uint32_t cpt = chipset->bltcpt;
+            uint32_t dpt = chipset->bltdpt;
+            int oneDotDone = 0;
+            int zero = 1;
+
+            for(int i=0;i<length;++i){
+                //pixel
+                uint16_t a = (uint16_t)(adat >> ashift);
+                uint16_t b = (texture & 1) ? 0xFFFF : 0;
+                uint16_t c = CHIPW(cpt >> 1);
+                c = (uint16_t)((c << 8) | (c >> 8));
+                if(sing && oneDotDone){
+                    a = 0;
+                }
+                uint16_t d = logicFunction(minterm, a, b, c);
+                if(d) zero = 0;
+                if(!(sing && oneDotDone)){
+                    CHIPW(dpt >> 1) = (uint16_t)((d << 8) | (d >> 8));
+                }
+                oneDotDone = 1;
+
+                //step
+                int stepYMinor = 0, stepYMajor = 0;
+                if(!sign){                          //minor axis step
+                    if(sud){
+                        stepYMinor = sul ? -1 : 1;
+                    }else{
+                        int dx = sul ? -1 : 1;
+                        ashift += dx;
+                        if(ashift == 16){ ashift = 0;  cpt += 2; }
+                        if(ashift == -1){ ashift = 15; cpt -= 2; }
+                    }
+                }
+                if(sud){                            //major axis step
+                    int dx = aul ? -1 : 1;
+                    ashift += dx;
+                    if(ashift == 16){ ashift = 0;  cpt += 2; }
+                    if(ashift == -1){ ashift = 15; cpt -= 2; }
+                }else{
+                    stepYMajor = aul ? -1 : 1;
+                }
+                if(stepYMinor || stepYMajor){
+                    cpt += (stepYMinor + stepYMajor) * cmod;
+                    oneDotDone = 0;                 //new row: the next pixel may be drawn
+                }
+                //only the first pixel goes to BLTDPT, the hardware then writes
+                //every pixel back to the address it read through channel C
+                dpt = cpt;
+
+                error = (int16_t)(error + (sign ? bmod : amod));
+                sign = error < 0;
+                texture = (uint16_t)((texture << 1) | (texture >> 15));
             }
-            
-            int minterm = chipset->bltcon0 & 255; //0xCA = normal 0x4A = XOR
-            
-            int patternShift = chipset->bltcon1 >>12;
-            uint16_t pattern = chipset->bltbdat;
-            
-            pattern = (pattern >> patternShift) | (pattern <<(16-patternShift));
-            
-            int addr=0;//running address
-            
-            //printf("Octant %d: dx - %d dy - %d @ 0x%06x\n",octCode,length,inc2/4,chipset->bltcpt);
-            
-            switch(octCode){
-                    
-                case 0:
-                    
-                    for(int i=0;i<length;++i){
-                        
-                        int offset = d+startPixel;
-                        addr = (planeAddr +(offset>>3)+(i*planeMod)) >> 1;
-                        
-                        //Pixel plot
-                        uint16_t pixel = chipramW[addr];
-                        pixel = (pixel <<8) | (pixel >>8);
-                        pixel = logicFunction(minterm,0x8000 >> (offset&15),pattern,pixel);
-                        pixel = (pixel <<8) | (pixel >>8);
-                        chipramW[addr] =pixel;
-                        
-                        if(D>0){
-                            D = D + inc1;
-                            d = d + 1;
-                            
-                        }else{
-                            D = D + inc2;
-                        }
-                        
-                    }
-                    break;
-                    
-                case 1:
-                    for(int i=0;i<length;++i){
-                        
-                        int offset = d+startPixel;
-                        addr =(planeAddr +(offset>>3)-(i*planeMod)) >> 1;
-                        
-                        //Pixel plot
-                        uint16_t pixel = chipramW[addr];
-                        pixel = (pixel <<8) | (pixel >>8);
-                        pixel = logicFunction(minterm,0x8000 >> (offset&15),pattern,pixel);
-                        pixel = (pixel <<8) | (pixel >>8);
-                        chipramW[addr] =pixel;
-                        
-                        if(D>0){
-                            D = D + inc1;
-                            d = d + 1;
-                            
-                        }else{
-                            D = D + inc2;
-                        }
-                        
-                    }
-                    break;
-                    
-                case 2:
-                    startPixel = 15 - startPixel;
-                    planeAddr +=1;
-                    for(int i=0;i<length;++i){
-                        
-                        int offset = d+startPixel;
-                        addr = (planeAddr - (offset>>3)+(i*planeMod))>>1;
-                        
-                        //Pixel plot
-                        uint16_t pixel = chipramW[addr];
-                        pixel = (pixel <<8) | (pixel >>8);
-                        pixel = logicFunction(minterm,0x0001 << (offset&15),pattern,pixel);
-                        pixel = (pixel <<8) | (pixel >>8);
-                        chipramW[addr] = pixel;
-                        
-                        if(D>0){
-                            D = D + inc1;
-                            d = d + 1;
-                            
-                        }else{
-                            D = D + inc2;
-                        }
-                        
-                    }
-                    break;
-                    
-                case 3:
-                    
-                    for(int i=0;i<length;++i){
-                        
-                        int offset =d+startPixel;
-                        addr =(planeAddr +(offset>>3)-(i*planeMod))>>1;
-                        
-                        //Pixel plot
-                        uint16_t pixel = chipramW[addr];
-                        pixel = (pixel <<8) | (pixel >>8);
-                        pixel = logicFunction(minterm,0x8000 >> (offset&15),pattern,pixel);
-                        pixel = (pixel <<8) | (pixel >>8);
-                        chipramW[addr] =pixel;
-                        
-                        if(D>0){
-                            D = D + inc1;
-                            d = d - 1;
-                            
-                        }else{
-                            D = D + inc2;
-                        }
-                        
-                    }
-                    break;
-                    
-                case 4:
-                    for(int i=0;i<length;++i){
-                        
-                        int offset = i+startPixel;
-                        addr =(planeAddr +(offset>>3)+(d*planeMod))>>1;
-                        
-                        //Pixel plot
-                        uint16_t pixel = chipramW[addr];
-                        pixel = (pixel <<8) | (pixel >>8);
-                        pixel = logicFunction(minterm,0x8000 >> (offset&15),pattern,pixel);
-                        pixel = (pixel <<8) | (pixel >>8);
-                        chipramW[addr] =pixel;
-                        
-                        if(D>0){
-                            D = D + inc1;
-                            d = d + 1;
-                            
-                        }else{
-                            D = D + inc2;
-                        }
-                        
-                    }
-                    break;
-                    
-                case 5:
-                    startPixel = 15 - startPixel;
-                    planeAddr +=1;
-                    for(int i=0;i<length;++i){
-                        
-                        int offset = i+startPixel;
-                        addr = (planeAddr - (offset>>3)+(d*planeMod))>>1;
-                        
-                        //Pixel plot
-                        uint16_t pixel = chipramW[addr];
-                        pixel = (pixel <<8) | (pixel >>8);
-                        pixel = logicFunction(minterm,0x0001 << (offset&15),pattern,pixel);
-                        pixel = (pixel <<8) | (pixel >>8);
-                        chipramW[addr] = pixel;
-                        
-                        if(D>0){
-                            D = D + inc1;
-                            d = d + 1;
-                            
-                        }else{
-                            D = D + inc2;
-                        }
-                        
-                    }
-                    break;
-                    
-                case 6:
-                    for(int i=0;i<length;++i){
-                        
-                        int offset = i+startPixel;
-                        addr =(planeAddr +(offset>>3)-(d*planeMod))>>1;
-                        
-                        //Pixel plot
-                        uint16_t pixel = chipramW[addr];
-                        pixel = (pixel <<8) | (pixel >>8);
-                        pixel = logicFunction(minterm,0x8000 >> (offset&15),pattern,pixel);
-                        pixel = (pixel <<8) | (pixel >>8);
-                        chipramW[addr] =pixel;
-                        
-                        if(D>0){
-                            D = D + inc1;
-                            d = d + 1;
-                            
-                        }else{
-                            D = D + inc2;
-                        }
-                        
-                    }
-                    break;
-                    
-                case 7:
-                    startPixel = 15 - startPixel;
-                    planeAddr +=1;
-                    for(int i=0;i<length;++i){
-                        
-                        int offset = i+startPixel;
-                        addr = (planeAddr - (offset>>3)-(d*planeMod))>>1;
-                        
-                        //Pixel plot
-                        uint16_t pixel = chipramW[addr];
-                        pixel = (pixel <<8) | (pixel >>8);
-                        pixel = logicFunction(minterm,0x0001 << (offset&15),pattern,pixel);
-                        pixel = (pixel <<8) | (pixel >>8);
-                        chipramW[addr] = pixel;
-                        
-                        if(D>0){
-                            D = D + inc1;
-                            d = d + 1;
-                            
-                        }else{
-                            D = D + inc2;
-                        }
-                        
-                    }
-                    break;
-                    
-                default:
-                    break;
-                    
+
+            chipset->bltcpt = cpt;
+            chipset->bltdpt = dpt;
+            chipset->bltapt = (chipset->bltapt & 0xFFFF0000) | (uint16_t)error;
+            chipset->bltcon0 = (uint16_t)((con0 & 0x0FFF) | ((ashift & 15) << 12));
+            chipset->bltcon1 = (uint16_t)((con1 & ~0x40) | (sign ? 0x40 : 0));
+
+            if(zero){
+                chipset->dmaconr |= 0x2000;
+            }else{
+                chipset->dmaconr &= 0xDFFF;
             }
-            
-            
-            chipset->bltcpt =addr;  // update cpt with the last known address... nothing should rely on this...
-            //chipset->bltapt = D;    // update apt with the last known address... nothing should rely on this...
-            
             chipset->bltsizh = 0; // all done;
             chipset->bltsizv = 0; // all done;
             chipset->dmaconr = chipset->dmaconr & 49151; //clear blitter busy bit
-            //generate an interrupt!
-            putChipReg16[INTREQ](0x8040);
-            
+            putChipReg16[INTREQ](0x8040); //generate an interrupt!
             
         }else{
             
@@ -429,23 +291,18 @@ void blitter_execute(Chipset_t* chipset){
             //if descend mode is on.
             if((chipset->bltcon1 & 2)){
                 xIncrement = -1;
-                
-                if(fillmode==1){
-                    printf("NO INCLUSIVE FILL MODE YET!!\n");
-                }
-                
-                if(fillmode==2){
-                    printf("NO EXCLUSIVE FILL MODE YET!!\n");
-                }
-                
+            }else{
+                fillmode = 0;   //area fill only works in descending mode on real hardware
             }
+            int fillExclusive = (fillmode & 2) ? 1 : 0;
+            int fillCarryIn = (chipset->bltcon1 >> 2) & 1;  //FCI
             
             
             //all pointers are word addressed and masked for 2meg only
-            int apt=(chipset->bltapt >> 1);
-            int bpt=(chipset->bltbpt >> 1);
-            int cpt=(chipset->bltcpt >> 1);
-            int dpt=(chipset->bltdpt >> 1);
+            uint32_t apt=(chipset->bltapt >> 1);
+            uint32_t bpt=(chipset->bltbpt >> 1);
+            uint32_t cpt=(chipset->bltcpt >> 1);
+            uint32_t dpt=(chipset->bltdpt >> 1);
             
             //Shifted seems to work properly
             int amod=chipset->bltamod >> 1;
@@ -478,6 +335,7 @@ void blitter_execute(Chipset_t* chipset){
                 
                 uint16_t previousA = 0;
                 uint16_t previousB = 0;
+                int fillCarry = fillCarryIn;
                 
                 
                 for(int x=0;x<sizeh;++x){
@@ -485,7 +343,7 @@ void blitter_execute(Chipset_t* chipset){
                     
                     //Channel A
                     if(useMask & 8){
-                        adat = internal.chipramW[apt];
+                        adat = CHIPW(apt);
                         adat = adat << 8 | adat >> 8;
                         apt +=xIncrement;
                     }
@@ -493,7 +351,7 @@ void blitter_execute(Chipset_t* chipset){
                     
                     //Channel B
                     if(useMask & 4){
-                        bdat = internal.chipramW[bpt];
+                        bdat = CHIPW(bpt);
                         bdat = bdat << 8 | bdat >> 8;
                         bpt +=xIncrement;
                     }
@@ -501,7 +359,7 @@ void blitter_execute(Chipset_t* chipset){
                     
                     //Channel C
                     if(useMask & 2){
-                        cdat = internal.chipramW[cpt];
+                        cdat = CHIPW(cpt);
                         cdat = cdat << 8 | cdat >> 8;
                         cpt +=xIncrement;
                     }
@@ -527,8 +385,8 @@ void blitter_execute(Chipset_t* chipset){
                         
                     }else{
                         
-                        channelA = (previousA << (16-shiftA)) | (channelA >> shiftA);
-                        channelB = (previousB << (16-shiftB)) | (channelB >> shiftB);
+                        channelA = ((uint32_t)previousA << (16-shiftA)) | (channelA >> shiftA);
+                        channelB = ((uint32_t)previousB << (16-shiftB)) | (channelB >> shiftB);
                         
                     }
                     //previousA = adat;
@@ -537,6 +395,10 @@ void blitter_execute(Chipset_t* chipset){
                     
                     
                     channelD = logicFunction(minterm, channelA, channelB, cdat);
+                    
+                    if(fillmode){
+                        channelD = blitterFill(channelD, &fillCarry, fillExclusive);
+                    }
                     
                     //Zero Flag
                     if(channelD!=0){
@@ -547,7 +409,7 @@ void blitter_execute(Chipset_t* chipset){
                     if(useMask & 1){
                         
                         channelD = channelD << 8 | channelD >>8;
-                        internal.chipramW[dpt] = channelD;
+                        CHIPW(dpt) = channelD;
                         dpt +=xIncrement;
                     }
                     

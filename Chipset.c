@@ -1,3 +1,4 @@
+#include "Paula.h"
 //
 //  Chipset.c
 //  The Omega Project
@@ -35,6 +36,7 @@ int planeMask[]={
 };
 
 void ChipsetInit(){
+    paulaReset();
     
     internal.LOF = 0;
     internal.chipramW =(uint16_t*)low16Meg;
@@ -174,23 +176,31 @@ void aud3lcL(uint32_t value){
 }
 
 void aud0perL(uint32_t value){  //
+    paulaSync();
     chipset.aud0per = value >> 16;
     chipset.aud0vol = value & 65535;
+    paulaRefresh();
 }
 
 void aud1perL(uint32_t value){  //
+    paulaSync();
     chipset.aud1per = value >> 16;
     chipset.aud1vol = value & 65535;
+    paulaRefresh();
 }
 
 void aud2perL(uint32_t value){  //
+    paulaSync();
     chipset.aud2per = value >> 16;
     chipset.aud2vol = value & 65535;
+    paulaRefresh();
 }
 
 void aud3perL(uint32_t value){  //
+    paulaSync();
     chipset.aud3per = value >> 16;
     chipset.aud3vol = value & 65535;
+    paulaRefresh();
 }
 
 void vbstrtL(uint32_t value){
@@ -488,11 +498,13 @@ void ddfstop(uint16_t value){
 }
 
 void  dmacon(uint16_t value){
+    paulaSync();
     if( (value & 32768) ==0){
         chipset.dmaconr = chipset.dmaconr ^ (chipset.dmaconr & value);
     }else{
         chipset.dmaconr = chipset.dmaconr | (value  & 2047); //top 5 bits not writable
     }
+    paulaRefresh();
 }
 
 void clxcon(uint16_t value){
@@ -522,11 +534,13 @@ void intreq(uint16_t value){
 }
 
 void adkcon(uint16_t value){
+    paulaSync();
     if( (value & 32768) ==0){
         chipset.adkconr = chipset.adkconr ^ (chipset.adkconr & value);
     }else{
         chipset.adkconr = chipset.adkconr | (value  & 32767);
     }
+    paulaRefresh();
 }
 
 void aud0lch(uint16_t value){
@@ -546,11 +560,14 @@ void aud0per(uint16_t value){
 }
 
 void aud0vol(uint16_t value){
+    paulaSync();
     chipset.aud0vol = value;
+    paulaRefresh();
 }
 
 void aud0dat(uint16_t value){
     chipset.aud0dat = value;
+    paulaWriteDat(0, value);
 }
 
 void aud1lch(uint16_t value){
@@ -570,11 +587,14 @@ void aud1per(uint16_t value){
 }
 
 void aud1vol(uint16_t value){
-    chipset.aud0vol = value;
+    paulaSync();
+    chipset.aud1vol = value;
+    paulaRefresh();
 }
 
 void aud1dat(uint16_t value){
     chipset.aud1dat = value;
+    paulaWriteDat(1, value);
 }
 
 void aud2lch(uint16_t value){
@@ -594,11 +614,14 @@ void aud2per(uint16_t value){
 }
 
 void aud2vol(uint16_t value){
+    paulaSync();
     chipset.aud2vol = value;
+    paulaRefresh();
 }
 
 void aud2dat(uint16_t value){
     chipset.aud2dat = value;
+    paulaWriteDat(2, value);
 }
 
 void aud3lch(uint16_t value){
@@ -618,11 +641,14 @@ void aud3per(uint16_t value){
 }
 
 void aud3vol(uint16_t value){
+    paulaSync();
     chipset.aud3vol = value;
+    paulaRefresh();
 }
 
 void aud3dat(uint16_t value){
     chipset.aud3dat = value;
+    paulaWriteDat(3, value);
 }
 
 
@@ -703,11 +729,12 @@ void bplcon3(uint16_t value){
     chipset.bplcon3 = value;
 }
 
+// The modulo is a signed byte count; stored here in words (pointers are word indices)
 void bpl1mod(uint16_t value){
-    chipset.bpl1mod = value >> 1; // Word aligned
+    chipset.bpl1mod = (int16_t)(value & 0xFFFE) / 2;
 }
 void bpl2mod(uint16_t value){
-    chipset.bpl2mod = value >> 1;
+    chipset.bpl2mod = (int16_t)(value & 0xFFFE) / 2;
 }
 void bplcon4(uint16_t value){
     //No AGA support yet

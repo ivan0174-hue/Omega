@@ -1,20 +1,55 @@
- # Omega
+# Omega per Raspberry Pi 4 (fork)
+
+Fork di [h5n1xp/Omega](https://github.com/h5n1xp/Omega), un emulatore Amiga
+500, con una versione **bare metal per Raspberry Pi 4 / 400**: niente
+Linux, il Pi si accende direttamente come un Amiga.
+
+**Per provarlo:** copia il contenuto della cartella [`pi/sd`](pi/sd) su una
+scheda SD formattata FAT32, aggiungi la tua ROM Kickstart chiamata
+`KICK.ROM` e i tuoi file `.adf`, poi accendi il Pi. Istruzioni complete in
+[`pi/sd/LEGGIMI.txt`](pi/sd/LEGGIMI.txt). Kickstart e dischi sono protetti
+da copyright e non sono inclusi.
+
+Novità rispetto all'originale (dettagli in [CHANGES-2026.md](CHANGES-2026.md)):
+
+- velocità di un Amiga 500 PAL (7,09 MHz, 50 Hz)
+- grafica dei giochi corretta: finestra di fetch dei bitplane, modulo,
+  scroll, tempi del copper, area fill e line mode del blitter
+- audio (Paula) su HDMI o jack, con il filtro dell'A500
+- joystick: gamepad USB e joystick da tastiera con tasti configurabili
+- menu dischi (F1-F4), impostazioni (F5: memoria chip/slow, audio,
+  joystick), istantanee (F12), reset completo
+- correzioni di crash e di memoria; la versione desktop SDL e quella
+  "headless" per i test restano disponibili
+
+Compilare la versione per Pi: [`pi/README-PI.md`](pi/README-PI.md).
+
+---
+
+# Omega
 
 
 ### Getting Started (quickly).
 
-Omega only needs a basic install of libSDL 2 to be installed on your system. Nothing else is required. To build on Linux, I use clang (but any c compiler will do), copy all the .c and .h files to a single directory, open a comandline cd into it, and then type:
+Omega only needs a basic install of libSDL 2 for the desktop build. To build on Linux/macOS:
 
-clang *.c -o omega -Iinclude -Lib -lSDL2 -LSDL2main
+    make            # SDL2 desktop build -> ./omega
+    make headless   # no external libraries at all -> ./omega-headless
 
-This will build and link a file called omega. Run this with the options kickstart.rom bootdisk.adf; so it will look something like:
+(Building by hand: compile every .c file except HostNull.c and link with -lSDL2; for the headless build use HostNull.c instead of HostSDL.c.)
 
-omega ./kick13.rom ./workbench.adf
+Run it with a kickstart ROM and up to 4 ADF images:
+
+    ./omega ./kick13.rom ./workbench.adf
 
 Any KS1.x or KS2.x rom will work (256k or 512k), Currently Kickstart 3.x is unable to boot to GUI.
 
 Once the emulator is running, hit F1 to "insert" the adf image into DF0: the emulator will now boot the disk. 
-Currently the emulator is able to boot to Workbench 1.3 (up to 4 ADF can be specified in the command line), to trigger a disk insertion event, press the associated F key (F1 for DF0: | F2 for DF1: | F3 for DF2: | F4 for DF3:). A small graphic of the inserted disk will show in the bottom left corner of the screen (the grpahic shows the spin of each disk, and drive head position). Press F5 to toggle the on screen graphics. The key to the right of the left-shift key will force the emulator to quit.
+Currently the emulator is able to boot to Workbench 1.3 (up to 4 ADF can be specified in the command line), to trigger a disk insertion event, press the associated F key (F1 for DF0: | F2 for DF1: | F3 for DF2: | F4 for DF3:). A small graphic of the inserted disk will show in the bottom left corner of the screen (the grpahic shows the spin of each disk, and drive head position). Press F5 to toggle the on screen graphics. The key to the right of the left-shift key (or closing the window) quits. Amiga F6-F10 work normally, F11/Insert is HELP, PageUp/PageDown act as the Amiga keys on PC keyboards without Windows keys.
+
+A Raspberry Pi 4 bare metal build (no OS) is in the `pi/` folder, see `pi/README-PI.md`.
+
+See CHANGES-2026.md for the 2026 revision (bug fixes, blitter fill, host layer split for bare metal).
 
 ### Background.
 

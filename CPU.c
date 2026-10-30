@@ -19,9 +19,15 @@
 #include "Memory.h"
 
 #include "CIA.h"
+#include "Floppy.h"
+#include "Host.h"
+#include <string.h>
 
 
 unsigned char* _emulatorMemory;
+
+int cpuBudget = 0;                          // CPU cycles owed/available (see cpu_execute)
+unsigned long long cpuCyclesTotal = 0;     // statistics / tests
 
 //#define NOSLOWRAM
 
@@ -31,24 +37,41 @@ unsigned char* _emulatorMemory;
 //#define CHIPTOP 0x1FFFFF // for 2Meg
 
 /* Called when the CPU pulses the RESET line */
+// Machine reset: Ctrl + Amiga + Amiga, or the 68000 RESET instruction (used by
+// Kickstart to reboot). Previously only RAM was cleared and the PC moved to the
+// ROM: the CPU (supervisor mode, interrupt mask, STOP state), the custom chip
+// registers (interrupts and DMA still enabled), the CIAs (which also drive the
+// floppy) and the drives kept their old state, so after changing disk and
+// resetting the Kickstart could hang or no longer read the floppy.
 void cpu_pulse_reset(void){
-    uint32_t pc = m68k_get_reg(NULL, M68K_REG_PC);
-    uint32_t sp = m68k_get_reg(NULL, M68K_REG_SP);
-
-    printf("PC:%0x6\n",pc);
-    printf("SP:%0x6\n",sp);
-    
     printf("Machine reset...\n");
-    
-    //clear RAM (don't wipe long at address 0 as that signals a Guru occured)
-    for(int i=4;i<0x1FFFFF;i++){
-        low16Meg[i]=0;
-    }
-    ChipsetInit();
-    m68k_set_reg(M68K_REG_PC, 0xF80002); //start executing at the ROM + 2
-    
-}
 
+    // cold start: clear chip RAM and slow RAM ($C00000)
+    memset(&low16Meg[0], 0, CHIP_MAX);
+    memset(&low16Meg[SLOW_BASE], 0, SLOW_MAX);
+
+    // custom chips
+    memset(&chipset, 0, sizeof(chipset));
+    memset(&internal, 0, sizeof(internal));
+    ChipsetInit();
+
+    // CIAs, floppy drives, keyboard
+    memset(&CIAA, 0, sizeof(CIAA));
+    memset(&CIAB, 0, sizeof(CIAB));
+    CIAInit(&CIAA, 32776);
+    CIAInit(&CIAB, 40960);
+    floppyReset();
+    inputReset();
+
+    // CPU: supervisor mode, interrupts masked, not stopped, start in ROM
+    cpuBudget = 0;
+    m68k_set_irq(0);
+    m68k_pulse_reset();
+    m68k_set_reg(M68K_REG_SR, 0x2700);
+    m68k_set_reg(M68K_REG_ISP, 0x00080000);
+    m68k_set_reg(M68K_REG_PC, 0xF80002);
+    m68k_end_timeslice();
+}
 
 void cpu_init(){
 
@@ -93,7 +116,17 @@ void cpu_execute(){
     uint32_t* guru = low16Meg;
  */
     
-    m68k_execute(16);
+    // Called once per colour clock. An A500 PAL runs the 68000 at 7.09379 MHz,
+    // exactly 2 CPU cycles per colour clock (3.546895 MHz). Instructions take
+    // 4 or more cycles, so the budget goes negative and is paid back on the
+    // following colour clocks. (The original code ran 16 cycles per colour
+    // clock, i.e. a 57 MHz 68000: everything was about 8 times too fast.)
+    cpuBudget += CPU_CYCLES_PER_CCK;
+    if(cpuBudget > 0){
+        int used = m68k_execute(cpuBudget);
+        cpuBudget -= used;
+        cpuCyclesTotal += used;
+    }
 
 }
 

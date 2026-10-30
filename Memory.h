@@ -15,14 +15,21 @@
 #ifndef Memory_h
 #define Memory_h
 
-//#define NOSLOWRAM
-//#define THREADED_CPU
+#include <stdint.h>
 
+// Memory configuration (see memoryConfigure). Changes take effect immediately;
+// the host resets the machine afterwards.
+#define CHIP_MAX   (2 * 1024 * 1024)           // chip RAM: 256K - 2MB at $000000
+#define SLOW_BASE  0xC00000                    // slow RAM ($C00000 - $DBFFFF)
+#define SLOW_MAX   (0xDC0000 - SLOW_BASE)      // 1.75MB, as far as Kickstart looks
+#define GAYLE_BASE 0xDA0000                    // IDE/clock area when no slow RAM is there
 
-//#define CHIPTOP  0x3FFFF // for 256K Chip
-//#define CHIPTOP  0x7FFFF // for 512K
-//#define CHIPTOP  0xFFFFF // for 1Meg
-#define CHIPTOP 0x1FFFFF // for 2Meg
+extern uint32_t chipRamSize;
+extern uint32_t chipRamMask;                   // chipRamSize - 1
+extern uint32_t slowRamSize;
+void memoryConfigure(uint32_t chipBytes, uint32_t slowBytes);
+
+#define CHIPTOP (chipRamMask)
 
 extern unsigned char low16Meg[16777216]; // only the DMA should use this
 

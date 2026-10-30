@@ -43,7 +43,7 @@ void CIAInit(CIA_t* cia,uint16_t paulaMask){
     //set up CIAA ports
     if(paulaMask == 32776){
         cia->Name[0] ='A';
-        cia->pra = 55;   //Pretend the ROM memory overlay is active (Powerlight is dim and floppy drive is not ready, and disk inseted is true).
+        cia->pra = 55 | 0xC0;   //buttons released. Pretend the ROM memory overlay is active (Powerlight is dim and floppy drive is not ready, and disk inseted is true).
     }
 }
 
@@ -53,7 +53,12 @@ void CIAWrite(CIA_t* cia,int reg,uint8_t value){
     
     switch(reg){
             
-        case 0x0:cia->pra = value & 63;break;//pra
+        case 0x0:
+            // only the lines programmed as outputs change (CIA-A: overlay and
+            // power LED / audio filter). The old code cleared bits 6 and 7, so a
+            // program switching the audio filter "pressed" mouse button and fire.
+            cia->pra = (uint8_t)((cia->pra & ~cia->ddra) | (value & cia->ddra));
+            break;//pra
         case 0x1://prb - Due to the floppy drive's dependance upon this register, it only flags a change if the write actually changed the value.
             /*
             if(value != cia->prb){

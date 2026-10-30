@@ -1,3 +1,4 @@
+#include "Paula.h"
 //
 //  DMA.c
 //  The Omega Project
@@ -577,37 +578,149 @@ void waitFreeSlot(){
     
     
     
-    while(SDL_AtomicGet(&cpuWait)){
-        //SDL_Delay(1);
+    while(cpuWait){
+        // only used with THREADED_CPU
     }
     
 }
 
 int lastFetchCycle;
+int firstFetchCycle;
+
+// CPU/DMA handshake for the (experimental) threaded CPU mode. Plain volatile
+// int instead of SDL_atomic_t so the core does not depend on SDL.
+volatile int cpuWait = 0;
+
+// set when bitplane data was fetched on the current line
+static int bitplaneLineFetched = 0;
+
+static void scrollReset(void);
+
+// Each emulated line is drawn on its own framebuffer row (line 44 = row 0),
+// starting at a position given by DDFSTRT (standard: lores 0x38, hires 0x3C).
+// Previously all lines were drawn as one continuous stream of pixels.
+#define FIRST_DISPLAY_LINE 44
+static int renderLine = -1;     // emulated line currently being drawn
+static int rowStartPx = 0;      // framebuffer index of the start of its row
+
+// Rows without bitplane data show the background colour (COLOR00), as the
+// border does on a real Amiga, instead of keeping old pixels.
+static void fillRowBackground(int line){
+    int row = line - FIRST_DISPLAY_LINE;
+    if(host.pixels == NULL || row < 0 || row >= FB_HEIGHT){
+        return;
+    }
+    uint32_t* p = &host.pixels[row * FB_WIDTH];
+    uint32_t c = internal.palette[0];
+    for(int x=0;x<FB_WIDTH;++x){
+        p[x] = c;
+    }
+}
+
+static void beginRenderLine(void){
+    if(renderLine == internal.vPos){
+        return;
+    }
+    renderLine = internal.vPos;
+    scrollReset();
+    fillRowBackground(internal.vPos);   // areas outside the fetched data are background
+    int row = internal.vPos - FIRST_DISPLAY_LINE;
+    rowStartPx = row * FB_WIDTH;
+    int standard = (chipset.bplcon0 & 0x8000) ? 0x3C : 0x38;
+    int offsetPx = (firstFetchCycle - standard) * 4;   // one colour clock = 4 hires pixels
+    host.FBCounter = (rowStartPx + offsetPx) / 2;      // renderers draw at 2*FBCounter
+}
+
+// The renderers write 'width' pixels at index 2*FBCounter: stay inside the row
+static inline int framebufferRoom(int width){
+    int pos = 2*host.FBCounter;
+    int row = internal.vPos - FIRST_DISPLAY_LINE;
+    return host.pixels != NULL && row >= 0 && row < FB_HEIGHT
+        && pos >= rowStartPx && pos + width <= rowStartPx + FB_WIDTH;
+}
+
+// order of the bitplane fetches inside one fetch unit (as in the tables above)
+static void (*loresSlots[8])(void) = {evenCycle, plane4, plane6, plane2, evenCycle, plane3, plane5, loresPlane1};
+static void (*hiresSlots[4])(void) = {plane4, plane2, plane3, hiresPlane1};
+
+// BPLCON1 horizontal scroll: odd planes are delayed by PF1P (bits 0-3), even
+// planes by PF2P (bits 4-7), in lores pixels (2 hires pixels in hires).
+// The plane words are kept in memory byte order; history is per line.
+static uint64_t scrollHistory[6];
+static inline uint16_t swap16(uint16_t v){ return (uint16_t)((v << 8) | (v >> 8)); }
+
+static void scrollReset(void){
+    for(int i=0;i<6;++i) scrollHistory[i] = 0;
+}
+
+static void scrollPlanes(uint16_t out[6], int hires){
+    uint16_t in[6] = {chipset.bpl1dat, chipset.bpl2dat, chipset.bpl3dat,
+                      chipset.bpl4dat, chipset.bpl5dat, chipset.bpl6dat};
+    if((chipset.bplcon1 & 0xFF) == 0){          // no scrolling: the common case
+        for(int i=0;i<6;++i){
+            scrollHistory[i] = (scrollHistory[i] << 16) | swap16(in[i]);
+            out[i] = in[i];
+        }
+        return;
+    }
+    int pf1 = chipset.bplcon1 & 15;
+    int pf2 = (chipset.bplcon1 >> 4) & 15;
+    for(int i=0;i<6;++i){
+        scrollHistory[i] = (scrollHistory[i] << 16) | swap16(in[i]);
+        int shift = (i & 1) ? pf2 : pf1;          // planes 1,3,5 = PF1; 2,4,6 = PF2
+        if(hires) shift *= 2;
+        out[i] = shift ? swap16((uint16_t)(scrollHistory[i] >> shift)) : in[i];
+    }
+}
+
+// Amiga 500 PAL: 227 colour clocks per line (0-226), 313 lines per frame
+// (0-312) = 49.92 frames per second. The original timing was NTSC
+// (228 x 263), 20% faster for anything that counts frames.
+#define LAST_CCK_OF_LINE   0xE2
+#define LAST_LINE_OF_FRAME 312
 
 void dma_execute(){
     
-    chipset.vposr   = (0x1000) | internal.vPos >> 8; //the internal.LOF might be needed, 0x1000 is for NTSC / 0x0000 is for PAL
+    chipset.vposr   = internal.vPos >> 8;   // Agnus ID 0 = PAL (0x1000 was NTSC)
     chipset.vhposr  = internal.vPos << 8;
     chipset.vhposr |= internal.hPos;
     
 
-    SDL_AtomicSet(&cpuWait, 1);
+    cpuWait = 1;
+    // Bitplane fetch window from DDFSTRT/DDFSTOP: fetch units of 8 colour clocks
+    // start at DDFSTRT; the unit in which DDFSTOP falls is the last one, and
+    // hires fetches one extra unit (standard: lores $38-$D0 = 20 words,
+    // hires $3C-$D0 = 40 words). Previously the window was always DDFSTRT+168
+    // (21 lores words per line), which only looked right while the modulo was 0.
+    // Inside the window the bitplane slots follow the fetch unit (they used to
+    // exist only from $38 on, so an early DDFSTRT - used for hardware scrolling -
+    // lost a word on every line). Outside it the normal slot table is used.
+    int inWindow = (chipset.dmaconr & 0x300) == 0x300;
     if(chipset.bplcon0 & 0x8000){
-        
-        lastFetchCycle = chipset.ddfstrt+168;
-        //lastFetchCycle = chipset.ddfstop+4;
-        
-        DMAHires[internal.hPos]();
+        firstFetchCycle = chipset.ddfstrt & 0xFC;
+        int units = ((int)chipset.ddfstop - firstFetchCycle) >> 3;
+        lastFetchCycle  = firstFetchCycle + (units < 0 ? 0 : units) * 8 + 15;
+        inWindow = inWindow && internal.hPos >= firstFetchCycle && internal.hPos <= lastFetchCycle;
+        if(inWindow){
+            hiresSlots[(internal.hPos - firstFetchCycle) & 3]();
+        }else{
+            DMAHires[internal.hPos]();
+        }
     }else{
-        
-        lastFetchCycle = chipset.ddfstrt+168;   //not sure why this needs an extra 8 cycles... need to investigate
-        
-        DMALores[internal.hPos]();
+        firstFetchCycle = chipset.ddfstrt & 0xF8;
+        int units = ((int)chipset.ddfstop - firstFetchCycle) >> 3;
+        lastFetchCycle  = firstFetchCycle + (units < 0 ? 0 : units) * 8 + 7;
+        inWindow = inWindow && internal.hPos >= firstFetchCycle && internal.hPos <= lastFetchCycle;
+        if(inWindow){
+            loresSlots[(internal.hPos - firstFetchCycle) & 7]();
+        }else{
+            DMALores[internal.hPos]();
+        }
     }
     
     
     eclock_execute(&chipset);   // CIA timers
+    PAULA_TICK();               // audio
 
     internal.hPos++;
     
@@ -615,8 +728,8 @@ void dma_execute(){
     
     
     //end of line reached! 227 colour clocks have executed
-    if(internal.hPos > 0xE3){
-        SDL_AtomicSet(&cpuWait, 0);
+    if(internal.hPos > LAST_CCK_OF_LINE){
+        cpuWait = 0;
         
 
         //************DeBugging**************
@@ -649,23 +762,31 @@ void dma_execute(){
         
         
         
+        if(renderLine != internal.vPos){
+            fillRowBackground(internal.vPos);   //nothing was drawn on this line
+        }
         internal.hPos = 0;
         internal.vPos +=1;
         CIATODEvent(&CIAB);
         
         
-        //Update bitplane modulo
-        chipset.bpl1pt += chipset.bpl1mod;
-        chipset.bpl3pt += chipset.bpl1mod;
-        chipset.bpl5pt += chipset.bpl1mod;
-        chipset.bpl7pt += chipset.bpl1mod;
-        chipset.bpl2pt += chipset.bpl2mod;
-        chipset.bpl4pt += chipset.bpl2mod;
-        chipset.bpl6pt += chipset.bpl2mod;
-        chipset.bpl8pt += chipset.bpl2mod;
+        //Update bitplane modulo - only after a line on which bitplanes were
+        //fetched (on real hardware the modulo is added at the last fetch).
+        //Adding it on every line moved the picture whenever the modulo was not 0.
+        if(bitplaneLineFetched){
+            chipset.bpl1pt += chipset.bpl1mod;
+            chipset.bpl3pt += chipset.bpl1mod;
+            chipset.bpl5pt += chipset.bpl1mod;
+            chipset.bpl7pt += chipset.bpl1mod;
+            chipset.bpl2pt += chipset.bpl2mod;
+            chipset.bpl4pt += chipset.bpl2mod;
+            chipset.bpl6pt += chipset.bpl2mod;
+            chipset.bpl8pt += chipset.bpl2mod;
+            bitplaneLineFetched = 0;
+        }
         
         //VBL Time
-        if(internal.vPos > 0x106 ){ //0x106 is the propper ntsc vbl
+        if(internal.vPos > LAST_LINE_OF_FRAME){
             internal.vPos = 0;
             //chipset.vposr   = (internal.LOF | 0x1000); //0x1000 is for NTSC / 0x0000 is for PAL
             
@@ -678,6 +799,7 @@ void dma_execute(){
             putChipReg16[INTREQ](0x8020);
             
             host.FBCounter = 0; // restart the frambuffer pointer
+            renderLine = -1;
             
             
             //Draw sprite 0
@@ -686,18 +808,21 @@ void dma_execute(){
                 
                 
                 if(chipset.spr0pt !=0){
-                    uint16_t* pos = &internal.chipramW[chipset.spr0pt];
-                    int mod = 0;
+                    uint16_t* pos = &CHIPW(chipset.spr0pt);
                     
                     int Nx=(pos[0] & 0xFF00) >> 7;
                     Nx |=( (pos[1] >> 8) & 1);
                     Nx = (Nx * 2)-254;
                     int Ny= ((pos[0] & 255))-43;
                     
-                    
-                    for(int i=2;i<32; i +=2){
-                        sprite2chunky(&((uint8_t *)host.pixels)[mod+(Ny*640*4)], &internal.palette[16], Nx, pos[i], pos[i+1],16);
-                        mod +=640*4;
+                    // clip vertically: rows outside the framebuffer were written
+                    // before/after the buffer (heap corruption) in the old code
+                    for(int i=2, line=0; i<32; i +=2, ++line){
+                        int row = Ny + line;
+                        if(row < 0 || row >= FB_HEIGHT){
+                            continue;
+                        }
+                        sprite2chunky(&host.pixels[row*FB_WIDTH], &internal.palette[16], Nx, pos[i], pos[i+1],16);
                     }
                     
                 }
@@ -705,6 +830,8 @@ void dma_execute(){
             
             
             
+            host.vblCount++;
+            inputFrame();  //deliver one queued keyboard event per frame
             hostDisplay(); //Call the host to update the display.
         }
         
@@ -713,13 +840,9 @@ void dma_execute(){
 
 
 void displayLineReset(){
-    
-    host.FBCounter -= (host.FBCounter%320);
-    
-    
-    //int temp = (host.FBCounter / 640);
-    //temp = (temp) * 640;
-    //host.FBCounter= temp;
+    //Lines are positioned individually by beginRenderLine(); after a BPLCON0
+    //change in the middle of a line, restart positioning on the next render.
+    renderLine = -1;
 }
 
 void setDisplayMode(int mode){
@@ -734,6 +857,14 @@ void setDisplayMode(int mode){
 
 void evenCycle(void){
 
+    // The copper only owns even colour clocks (a MOVE takes 4 clocks). Bitplane
+    // slots that are not used fall back to evenCycle() on odd clocks too, which
+    // made the copper run twice as fast as real hardware: games that change
+    // registers at an exact point of a line (e.g. Monkey Island) broke.
+    if(internal.hPos & 1){
+        oddCycle();
+        return;
+    }
     
     if(copperExecute()==1){
         return;
@@ -751,7 +882,7 @@ void oddCycle(void){
     }
     
     //A Free slot for CPU... but the CPU isn't currently bound to the DMA timing
-    SDL_AtomicSet(&cpuWait, 0);
+    cpuWait = 0;
 }
 
 void dramCycle(void){
@@ -798,10 +929,10 @@ void diskCycle(void){
                 if(floppySync == 1){
                     
                     //chipset.dskbytr &= 0xEFFF;      //clear word sync
-                    low16Meg[chipset.dskpt] = b1;
+                    low16Meg[chipset.dskpt & CHIPB_MASK] = b1;
                     chipset.dskpt +=1;
                 
-                    low16Meg[chipset.dskpt] = b2;
+                    low16Meg[chipset.dskpt & CHIPB_MASK] = b2;
                     chipset.dskpt +=1;
                 
                     chipset.dsklen -= 1;
@@ -826,95 +957,39 @@ void diskCycle(void){
 
 
 void audio0Cycle(void){
-    
-    if((chipset.dmacon & 0x201) == 0x201){
-        
-        internal.audio0Countdown -=1;
-        
-        if(internal.audio0Countdown<0){
-            internal.audio0Countdown = chipset.aud0per;
-
-        
-            chipset.aud0len -=1;
-        
-            if(chipset.aud0len ==0){
-                internal.audio0Countdown = 0;
-                putChipReg16[INTREQ](0x8080);
-            }
-        }
+    // Audio DMA slot: Paula.c fetches the data itself (paulaTick); the slot
+    // is only taken away from the blitter while the channel is running.
+    if((chipset.dmaconr & 0x201) == 0x201){
         return;
     }
-    
     oddCycle();
 }
 
 
 void audio1Cycle(void){
-    
-    if((chipset.dmacon & 0x202) == 0x202){
-        
-        internal.audio1Countdown -=1;
-        
-        if(internal.audio1Countdown<0){
-            internal.audio1Countdown = chipset.aud1per;
-            
-            
-            chipset.aud1len -=1;
-            
-            if(chipset.aud1len ==0){
-                internal.audio1Countdown = 0;
-                putChipReg16[INTREQ](0x8100);
-            }
-        }
+    // Audio DMA slot: Paula.c fetches the data itself (paulaTick); the slot
+    // is only taken away from the blitter while the channel is running.
+    if((chipset.dmaconr & 0x202) == 0x202){
         return;
     }
-    
     oddCycle();
 }
 
 void audio2Cycle(void){
-    
-    if((chipset.dmacon & 0x204) == 0x204){
-        
-        internal.audio2Countdown -=1;
-        
-        if(internal.audio2Countdown<0){
-            internal.audio2Countdown = chipset.aud2per;
-            
-            
-            chipset.aud2len -=1;
-            
-            if(chipset.aud2len ==0){
-                internal.audio2Countdown = 0;
-                putChipReg16[INTREQ](0x8200);
-            }
-        }
+    // Audio DMA slot: Paula.c fetches the data itself (paulaTick); the slot
+    // is only taken away from the blitter while the channel is running.
+    if((chipset.dmaconr & 0x204) == 0x204){
         return;
     }
-    
     oddCycle();
 }
 
 void audio3Cycle(void){
-    
-    if((chipset.dmacon & 0x208) == 0x208){
-        
-        internal.audio3Countdown -=1;
-        
-        if(internal.audio3Countdown<0){
-            internal.audio3Countdown = chipset.aud3per;
-            
-            
-            chipset.aud3len -=1;
-            
-            if(chipset.aud3len ==0){
-                internal.audio3Countdown = 0;
-                putChipReg16[INTREQ](0x8400);
-            }
-        }
+    // Audio DMA slot: Paula.c fetches the data itself (paulaTick); the slot
+    // is only taken away from the blitter while the channel is running.
+    if((chipset.dmaconr & 0x208) == 0x208){
         return;
     }
-    
     oddCycle();
 }
 
@@ -925,7 +1000,7 @@ void spriteCycle(void){
 }
 
 
-int bitplaneActive(){
+static inline int bitplaneActive(void){
     
     //check if DMA is on, if not let the Copper and Blitter run.
     if((chipset.dmaconr & 0x300) != 0x300){
@@ -949,9 +1024,10 @@ int bitplaneActive(){
         return 0;
     }
     
-    // vpos not working...
-    if(internal.vPos> ((chipset.diwstop>>8)| 256)){
-       // return 0;
+    //vertical stop: DIWSTOP V7-V0, with V8 = NOT V7 (OCS)
+    int vstop = ((chipset.diwstop >> 8) & 0xFF) | ((~chipset.diwstop >> 7) & 0x100);
+    if(internal.vPos >= vstop){
+        return 0;
     }
     
     return 1;
@@ -968,8 +1044,9 @@ void plane6(void){
     
     chipset.bpl6dat = 0;
     if( (internal.bitplaneMask & 0x20)  == 0x20){
-        uint16_t* p = &internal.chipramW[chipset.bpl6pt];
+        uint16_t* p = &CHIPW(chipset.bpl6pt);
         chipset.bpl6pt +=1;
+        bitplaneLineFetched = 1;
         chipset.bpl6dat = *p;
         return;
     }
@@ -987,8 +1064,9 @@ void plane5(void){
     
     chipset.bpl5dat = 0;
     if( (internal.bitplaneMask & 0x10)  == 0x10){
-        uint16_t* p = &internal.chipramW[chipset.bpl5pt];
+        uint16_t* p = &CHIPW(chipset.bpl5pt);
         chipset.bpl5pt +=1;
+        bitplaneLineFetched = 1;
         chipset.bpl5dat = *p;
         return;
     }
@@ -1011,8 +1089,9 @@ void loresPlane1(void){
     if( (internal.bitplaneMask & 0x1)  == 0x1){
 
     
-        uint16_t* p = &internal.chipramW[chipset.bpl1pt];
+        uint16_t* p = &CHIPW(chipset.bpl1pt);
         chipset.bpl1pt +=1;
+        bitplaneLineFetched = 1;
         chipset.bpl1dat = *p;
     }
     
@@ -1022,11 +1101,18 @@ void loresPlane1(void){
         return;
     }
     
+    beginRenderLine();
+    uint16_t d[6];
+    scrollPlanes(d, 0);
+    if(!framebufferRoom(32)){
+        host.FBCounter +=16;
+        return;
+    }
     uint32_t* pixbuff = (uint32_t*)host.pixels;
     if(chipset.bplcon0 & 0x800){
-        loresHAM2Chunky(&pixbuff[host.FBCounter], internal.palette, chipset.bpl1dat, chipset.bpl2dat, chipset.bpl3dat, chipset.bpl4dat,chipset.bpl5dat, chipset.bpl6dat);
+        loresHAM2Chunky(&pixbuff[host.FBCounter], internal.palette, d[0], d[1], d[2], d[3], d[4], d[5]);
     }else{
-        loresPlanar2Chunky(&pixbuff[host.FBCounter], internal.palette, chipset.bpl1dat, chipset.bpl2dat, chipset.bpl3dat, chipset.bpl4dat,chipset.bpl5dat, chipset.bpl6dat);
+        loresPlanar2Chunky(&pixbuff[host.FBCounter], internal.palette, d[0], d[1], d[2], d[3], d[4], d[5]);
     }
     host.FBCounter +=16;
     
@@ -1043,8 +1129,9 @@ void plane4(){
     
     chipset.bpl4dat = 0;
     if( (internal.bitplaneMask & 0x8)  == 0x8){
-        uint16_t* p = &internal.chipramW[chipset.bpl4pt];
+        uint16_t* p = &CHIPW(chipset.bpl4pt);
         chipset.bpl4pt +=1;
+        bitplaneLineFetched = 1;
         chipset.bpl4dat = *p;
         return;
     }
@@ -1062,8 +1149,9 @@ void plane2(){
     
     chipset.bpl2dat = 0;
     if( (internal.bitplaneMask & 0x2)  == 0x2){
-        uint16_t* p = &internal.chipramW[chipset.bpl2pt];
+        uint16_t* p = &CHIPW(chipset.bpl2pt);
         chipset.bpl2pt +=1;
+        bitplaneLineFetched = 1;
         chipset.bpl2dat = *p;
         return;
     }
@@ -1081,8 +1169,9 @@ void plane3(){
     
     chipset.bpl3dat = 0;
     if( (internal.bitplaneMask & 0x4)  == 0x4){
-        uint16_t* p = &internal.chipramW[chipset.bpl3pt];
+        uint16_t* p = &CHIPW(chipset.bpl3pt);
         chipset.bpl3pt +=1;
+        bitplaneLineFetched = 1;
         chipset.bpl3dat = *p;
         return;
     }
@@ -1105,8 +1194,9 @@ void hiresPlane1(){
     
     chipset.bpl1dat = 0;
     if( (internal.bitplaneMask & 0x1)  == 0x1){
-        uint16_t* p = &internal.chipramW[chipset.bpl1pt];
+        uint16_t* p = &CHIPW(chipset.bpl1pt);
         chipset.bpl1pt +=1;
+        bitplaneLineFetched = 1;
         chipset.bpl1dat = *p;
     
     }
@@ -1117,8 +1207,15 @@ void hiresPlane1(){
         return;
     }
     
+    beginRenderLine();
+    uint16_t d[6];
+    scrollPlanes(d, 1);
+    if(!framebufferRoom(16)){
+        host.FBCounter +=8;
+        return;
+    }
     uint32_t* pixbuff = (uint32_t*)host.pixels;
-    hiresPlanar2Chunky(&pixbuff[host.FBCounter], internal.palette, chipset.bpl1dat, chipset.bpl2dat, chipset.bpl3dat, chipset.bpl4dat);
+    hiresPlanar2Chunky(&pixbuff[host.FBCounter], internal.palette, d[0], d[1], d[2], d[3]);
     host.FBCounter +=8;
     return;
     
@@ -1138,13 +1235,12 @@ void drawBlank(){
     
     uint32_t* pixbuff = (uint32_t*)host.pixels;
     
-    if(pixbuff==NULL || internal.vPos<44){
+    if(!framebufferRoom(16) || internal.vPos<44){
         return;
     }
     
     for(int i=0;i<16;++i){
-        //pixbuff[host.FBCounter+i]=internal.palette[0];
-        pixbuff[host.FBCounter+i]=rand()%4294967296;
+        pixbuff[host.FBCounter+i]=internal.palette[0];
     }
     host.FBCounter +=16;
     
@@ -1161,7 +1257,7 @@ int copperExecute(){
         
     switch(internal.copperCycle){
         case 0:
-            internal.IR1 = internal.chipramW[internal.copperPC];
+            internal.IR1 = CHIPW(internal.copperPC);
             internal.IR1 = (internal.IR1 <<8) | (internal.IR1 >>8);
             internal.copperPC += 1;
             internal.copperCycle = 1;
@@ -1173,7 +1269,7 @@ int copperExecute(){
             break;
             
         case 1:
-            internal.IR2 = internal.chipramW[internal.copperPC];
+            internal.IR2 = CHIPW(internal.copperPC);
             internal.copperPC += 1;
             
             internal.IR1 = (internal.IR1 >> 1) & 255;   // divide by 2 and mask off bad bits
@@ -1198,7 +1294,7 @@ int copperExecute(){
             break;
             
         case 2:
-            internal.IR2 = internal.chipramW[internal.copperPC];
+            internal.IR2 = CHIPW(internal.copperPC);
             internal.copperPC += 1;
             
             internal.IR2 = (internal.IR2 <<8) | (internal.IR2 >>8);
@@ -1354,7 +1450,7 @@ int blitterCopyCycle(){
             
             //Channel A
             if(internal.useMask & 8){
-                chipset.bltadat = internal.chipramW[internal.apt];
+                chipset.bltadat = CHIPW(internal.apt);
                 chipset.bltadat = chipset.bltadat << 8 | chipset.bltadat >> 8;
                 internal.apt +=internal.xIncrement;
             }
@@ -1362,7 +1458,7 @@ int blitterCopyCycle(){
             
             //Channel B
             if(internal.useMask & 4){
-                chipset.bltbdat = internal.chipramW[internal.bpt];
+                chipset.bltbdat = CHIPW(internal.bpt);
                 chipset.bltbdat = chipset.bltbdat << 8 | chipset.bltbdat >> 8;
                 internal.bpt +=internal.xIncrement;
             }
@@ -1370,7 +1466,7 @@ int blitterCopyCycle(){
             
             //Channel C
             if(internal.useMask & 2){
-                chipset.bltcdat = internal.chipramW[internal.cpt];
+                chipset.bltcdat = CHIPW(internal.cpt);
                 chipset.bltcdat = chipset.bltcdat << 8 | chipset.bltcdat >> 8;
                 internal.cpt +=internal.xIncrement;
             }
@@ -1415,7 +1511,7 @@ int blitterCopyCycle(){
             if(internal.useMask & 1){
                 
                 channelD = channelD << 8 | channelD >>8;
-                internal.chipramW[internal.dpt] = channelD;
+                CHIPW(internal.dpt) = channelD;
                 internal.dpt +=internal.xIncrement;
             }
             
