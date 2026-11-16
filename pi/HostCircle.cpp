@@ -34,6 +34,8 @@
 #include <circle/string.h>
 #include <fatfs/ff.h>
 #include <circle/usb/usbgamepad.h>
+#include <circle/usb/usbserial.h>
+#include <circle/devicenameservice.h>
 #include <circle/sound/soundbasedevice.h>
 #include <circle/sound/hdmisoundbasedevice.h>
 #include <circle/sound/pwmsoundbasedevice.h>
@@ -46,6 +48,7 @@ extern "C" {
 #include "../CPU.h"
 #include "../CIA.h"
 #include "../Paula.h"
+#include "../DrawBridge.h"
 }
 
 #define FRAME_US	20032		// PAL frame: 313 x 227 colour clocks at 3.546895 MHz = 20.032 ms
@@ -446,6 +449,9 @@ long hostLoadFile (const char *pPath, uint8_t *pBuffer, long nMaxSize)
 	return nTotal;
 }
 
+static CString s_Message;		// status bar message
+static int s_nMessageFrames = 0;
+
 // ---------------------------------------------------------------------------
 // Drives
 
@@ -458,6 +464,8 @@ struct TDrive
 
 static TDrive s_Drive[4];
 static uint8_t s_ImageBuffer[ADF_MAX + 1];
+
+static void ScheduleInsert (unsigned nDrive, const char *pName, boolean bWasInserted);
 
 static const char *LoadDisk (unsigned nDrive, const char *pPath, const char *pName)
 {
@@ -477,7 +485,12 @@ static const char *LoadDisk (unsigned nDrive, const char *pPath, const char *pNa
 	{
 		return "Errore nel caricamento";
 	}
+	ScheduleInsert (nDrive, pName, bWasInserted);
+	return 0;
+}
 
+static void ScheduleInsert (unsigned nDrive, const char *pName, boolean bWasInserted)
+{
 	CopyString (s_Drive[nDrive].Name, pName, sizeof s_Drive[nDrive].Name);
 	if (bWasInserted)
 	{
@@ -490,7 +503,6 @@ static const char *LoadDisk (unsigned nDrive, const char *pPath, const char *pNa
 		s_Drive[nDrive].nInsertCountdown = 0;
 		s_Drive[nDrive].bPendingInsert = TRUE;
 	}
-	return 0;
 }
 
 static void EjectDisk (unsigned nDrive)
@@ -499,6 +511,157 @@ static void EjectDisk (unsigned nDrive)
 	s_Drive[nDrive].Name[0] = '\0';
 	s_Drive[nDrive].nInsertCountdown = 0;
 	s_Drive[nDrive].bPendingInsert = FALSE;
+}
+
+// ---------------------------------------------------------------------------
+// Real floppy drive: DrawBridge (Arduino Floppy Disk Reader by Rob Smith) on a
+// USB serial adapter (FTDI, 2 Mbaud). The Amiga reads the disk in the real
+// drive track by track; see Floppy.c and DrawBridge.c.
+//   drawbridge=off|df0|df1   (OMEGA.CFG; F5)
+
+enum TDrawBridgeDrive { DrawBridgeOff, DrawBridgeDF0, DrawBridgeDF1, DRAWBRIDGE_OPTIONS };
+static const char *s_DrawBridgeNames[DRAWBRIDGE_OPTIONS] = {"spento", "come DF0:", "come DF1:"};
+static const char *s_DrawBridgeKeys[DRAWBRIDGE_OPTIONS] = {"off", "df0", "df1"};
+static unsigned s_nDrawBridgeChoice = DrawBridgeOff;
+static unsigned s_nDrawBridgeActive = DrawBridgeOff;
+
+static CUSBSerialDevice * volatile s_pDrawBridgeSerial = 0;
+static volatile boolean s_bDrawBridgeRemoved = FALSE;
+
+static int DrawBridgeWrite (const void *pData, int nCount)
+{
+	CUSBSerialDevice *pSerial = s_pDrawBridgeSerial;
+	if (pSerial == 0 || s_bDrawBridgeRemoved)
+	{
+		return -1;
+	}
+	return pSerial->Write (pData, nCount);
+}
+
+static int DrawBridgeRead (void *pData, int nCount)
+{
+	CUSBSerialDevice *pSerial = s_pDrawBridgeSerial;
+	if (pSerial == 0 || s_bDrawBridgeRemoved)
+	{
+		return -1;
+	}
+	int n = pSerial->Read (pData, nCount);
+	return n < 0 ? -1 : n;
+}
+
+static uint32_t DrawBridgeMicros (void)
+{
+	return CTimer::GetClockTicks ();
+}
+
+static const DbPort s_DrawBridgePort = {DrawBridgeWrite, DrawBridgeRead, DrawBridgeMicros};
+
+static void DrawBridgeRemovedHandler (CDevice *pDevice, void *pContext)
+{
+	s_bDrawBridgeRemoved = TRUE;		// handled between two frames
+}
+
+// Look for the DrawBridge on the USB serial ports ("utty1".. "utty4")
+static boolean ConnectDrawBridge (void)
+{
+	if (s_pDrawBridgeSerial != 0 && !s_bDrawBridgeRemoved && dbState () == DB_READY)
+	{
+		return TRUE;
+	}
+	CKernel::Get ()->UpdateUSB ();
+	for (unsigned n = 1; n <= 4; n++)
+	{
+		CUSBSerialDevice *pSerial =
+			(CUSBSerialDevice *) CDeviceNameService::Get ()->GetDevice ("utty", n, FALSE);
+		if (pSerial == 0)
+		{
+			continue;
+		}
+		if (!pSerial->SetBaudRate (2000000))
+		{
+			continue;
+		}
+		s_bDrawBridgeRemoved = FALSE;
+		s_pDrawBridgeSerial = pSerial;
+		if (dbOpen (&s_DrawBridgePort))
+		{
+			pSerial->RegisterRemovedHandler (DrawBridgeRemovedHandler, 0);
+			floppySetTrackReader (dbReadTrack);
+			return TRUE;
+		}
+		s_pDrawBridgeSerial = 0;
+	}
+	return FALSE;
+}
+
+static void CheckDrawBridge (void)		// once per frame
+{
+	if (s_bDrawBridgeRemoved && s_pDrawBridgeSerial != 0)
+	{
+		s_pDrawBridgeSerial = 0;
+		dbClose ();
+		s_Message = "DrawBridge scollegato";
+		s_nMessageFrames = 4 * 60;
+	}
+	if (s_pDrawBridgeSerial != 0)
+	{
+		dbIdle ();
+	}
+}
+
+// Put the disk that is in the real drive into the emulated drive
+static const char *InsertRealDisk (unsigned nDrive)
+{
+	if (!ConnectDrawBridge ())
+	{
+		return "DrawBridge non trovato: e' collegato alla USB? (serve un adattatore FTDI)";
+	}
+	if (dbDiskPresent () == 0)
+	{
+		return "Nessun disco nel drive vero";
+	}
+	boolean bWasInserted = floppyIsInserted (nDrive);
+	floppyEjectDisk (nDrive);
+	if (!floppyLoadLive (nDrive))
+	{
+		return "Errore con il drive vero";
+	}
+	ScheduleInsert (nDrive, "disco vero", bWasInserted);
+	return 0;
+}
+
+// Real drive switched on/off or moved to another DF: in the F5 menu, and at start
+static void ApplyDrawBridge (unsigned nChoice)
+{
+	// a real disk in the drive that no longer has the real drive goes out
+	for (unsigned i = 0; i < 2; i++)
+	{
+		if (floppyIsLive (i) && (nChoice == DrawBridgeOff || i != nChoice - 1))
+		{
+			EjectDisk (i);
+		}
+	}
+	s_nDrawBridgeActive = nChoice;
+	if (nChoice == DrawBridgeOff)
+	{
+		return;
+	}
+	unsigned nDrive = nChoice - 1;
+	if (!ConnectDrawBridge ())
+	{
+		s_Message = "DrawBridge non trovato: collegalo alla USB e riprova da F5";
+		s_nMessageFrames = 6 * 60;
+		return;
+	}
+	CString Found;
+	Found.Format ("DrawBridge %s trovato: disco vero in DF%u: (F%u per reinserirlo)", dbVersion (), nDrive, nDrive + 1);
+	s_Message = Found;
+	s_nMessageFrames = 5 * 60;
+	// like a real Amiga: if a disk is in the drive (and the emulated drive is empty), it goes in
+	if (!floppyIsInserted (nDrive) && s_Drive[nDrive].Name[0] == '\0' && dbDiskPresent () == 1)
+	{
+		InsertRealDisk (nDrive);
+	}
 }
 
 static void UpdateDrives (void)
@@ -526,6 +689,7 @@ static void UpdateDrives (void)
 
 enum TEntryType
 {
+	EntryRealDisk,
 	EntryEject,
 	EntryParent,
 	EntryFolder,
@@ -554,6 +718,11 @@ static void ReadFolder (void)
 	s_nSelected = 0;
 	s_nFirstVisible = 0;
 
+	if (s_nDrawBridgeActive != DrawBridgeOff && s_nMenuDrive == s_nDrawBridgeActive - 1)
+	{
+		s_Entries[s_nEntries].Type = EntryRealDisk;
+		CopyString (s_Entries[s_nEntries++].Name, "<< disco nel drive vero (DrawBridge) >>", FF_MAX_LFN + 1);
+	}
 	s_Entries[s_nEntries].Type = EntryEject;
 	CopyString (s_Entries[s_nEntries++].Name, "<< nessun disco (estrai) >>", FF_MAX_LFN + 1);
 
@@ -729,6 +898,16 @@ static void MenuKey (u8 ucKey)
 		const TEntry &Entry = s_Entries[s_nSelected];
 		switch (Entry.Type)
 		{
+		case EntryRealDisk:
+			s_pMenuMessage = "Lettura dal drive vero...";
+			DrawMenu ();
+			s_pMenuMessage = InsertRealDisk (s_nMenuDrive);
+			if (s_pMenuMessage == 0)
+			{
+				s_bMenu = FALSE;
+			}
+			break;
+
 		case EntryEject:
 			EjectDisk (s_nMenuDrive);
 			s_bMenu = FALSE;
@@ -813,10 +992,11 @@ static const char *s_AudioKeys[AUDIO_OPTIONS] = {"hdmi", "jack", "off"};
 static const unsigned s_StereoOptions[] = {100, 70, 50, 0};
 #define STEREO_OPTIONS (sizeof s_StereoOptions / sizeof s_StereoOptions[0])
 
-#define SET_ROWS	7			// chip, slow, audio, stereo, joystick page, apply, cancel
-#define ROW_JOY		4
-#define ROW_APPLY	5
-#define ROW_CANCEL	6
+#define SET_ROWS	8			// chip, slow, audio, stereo, real drive, joystick page, apply, cancel
+#define ROW_DRAWBRIDGE	4
+#define ROW_JOY		5
+#define ROW_APPLY	6
+#define ROW_CANCEL	7
 
 // Joysticks (page opened from F5)
 //   joykb=0|1            keyboard joystick in port 2 (default off: the keys go to the Amiga)
@@ -933,6 +1113,16 @@ static void LoadConfig (void)
 			{
 				s_nPadStart = atoi (p + 9) % START_KEYS;
 			}
+			else if (strncmp (p, "drawbridge=", 11) == 0)
+			{
+				for (unsigned i = 0; i < DRAWBRIDGE_OPTIONS; i++)
+				{
+					if (strncmp (p + 11, s_DrawBridgeKeys[i], 3) == 0)
+					{
+						s_nDrawBridgeChoice = i;
+					}
+				}
+			}
 			else if (strncmp (p, "port1=", 6) == 0)
 			{
 				s_bPort1Pad = strncmp (p + 6, "pad", 3) == 0;
@@ -944,8 +1134,11 @@ static void LoadConfig (void)
 	s_nChipChoice = IndexOf (s_ChipOptions, CHIP_OPTIONS, chipRamSize / 1024);
 	s_nSlowChoice = IndexOf (s_SlowOptions, SLOW_OPTIONS, slowRamSize / 1024);
 	s_nAudioActive = s_nAudioChoice;	// started in hostInit()
+	s_nDrawBridgeActive = s_nDrawBridgeChoice;
 	s_nStereoActive = s_nStereoChoice;
 }
+
+static unsigned s_nDrawBridgeSave = DrawBridgeOff;	// value written by SaveConfig
 
 static boolean SaveConfig (unsigned nChipKB, unsigned nSlowKB, unsigned nAudio, unsigned nStereo)
 {
@@ -956,6 +1149,9 @@ static boolean SaveConfig (unsigned nChipKB, unsigned nSlowKB, unsigned nAudio, 
 		    s_bKeyboardJoy ? 1 : 0, s_JoyKeys[0], s_JoyKeys[1], s_JoyKeys[2], s_JoyKeys[3], s_JoyKeys[4], s_JoyKeys[5],
 		    s_nPadBRole, s_nPadStart, s_bPort1Pad ? "pad" : "mouse");
 	Text.Append ((const char *) Joy);
+	CString Db;
+	Db.Format ("drawbridge=%s\n", s_DrawBridgeKeys[s_nDrawBridgeSave]);
+	Text.Append ((const char *) Db);
 
 	FIL File;
 	if (f_open (&File, CONFIG_FILE, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
@@ -974,6 +1170,7 @@ static void OpenSettings (void)
 	s_nSlowChoice = IndexOf (s_SlowOptions, SLOW_OPTIONS, slowRamSize / 1024);
 	s_nAudioChoice = s_nAudioActive;
 	s_nStereoChoice = s_nStereoActive;
+	s_nDrawBridgeChoice = s_nDrawBridgeActive;
 	s_nSettingsRow = 0;
 	s_bSettings = TRUE;
 	s_bMenuDirty = TRUE;
@@ -1027,6 +1224,7 @@ static void DrawSettings (void)
 	{
 		Rows[3].Format (" Stereo:     <  %u%%  >", s_StereoOptions[s_nStereoChoice]);
 	}
+	Rows[ROW_DRAWBRIDGE].Format (" Floppy vero (DrawBridge):  <  %s  >", s_DrawBridgeNames[s_nDrawBridgeChoice]);
 	Rows[ROW_JOY] = " Joystick, gamepad e tasti...";
 	Rows[ROW_APPLY] = bMemoryChanged ? " Salva e riavvia l'Amiga" : " Salva";
 	Rows[ROW_CANCEL] = " Annulla";
@@ -1049,6 +1247,17 @@ static void DrawSettings (void)
 		  COLOR_DIM, COLOR_BACK, 80, TRUE);
 	DrawText (0, nTop + 360, " Stereo: l'Amiga separa completamente i canali; in cuffia 70% e' piu' piacevole.",
 		  COLOR_DIM, COLOR_BACK, 80, TRUE);
+	CString Db;
+	if (s_pDrawBridgeSerial != 0 && dbState () == DB_READY)
+	{
+		Db.Format (" Floppy vero: DrawBridge %s collegato, %d tracce lette, %d errori. Disco: F1 (o F2)",
+			   dbVersion (), dbTracksRead, dbReadErrors);
+	}
+	else
+	{
+		Db = " Floppy vero: un drive vero via Arduino DrawBridge (USB, adattatore FTDI). Sola lettura.";
+	}
+	DrawText (0, nTop + 384, (const char *) Db, COLOR_DIM, COLOR_BACK, 80, TRUE);
 
 	const char *pHelp = s_pMenuMessage != 0 ? s_pMenuMessage
 			  : "Su/Giu: voce   Sinistra/Destra: valore   Invio: conferma   Esc: chiudi";
@@ -1088,6 +1297,10 @@ static void SettingsKey (u8 ucKey)
 		{
 			s_nStereoChoice = (s_nStereoChoice + STEREO_OPTIONS + nDelta) % STEREO_OPTIONS;
 		}
+		else if (s_nSettingsRow == ROW_DRAWBRIDGE)
+		{
+			s_nDrawBridgeChoice = (s_nDrawBridgeChoice + DRAWBRIDGE_OPTIONS + nDelta) % DRAWBRIDGE_OPTIONS;
+		}
 		} break;
 
 	case HID_ENTER:
@@ -1105,6 +1318,7 @@ static void SettingsKey (u8 ucKey)
 		}
 		else if (s_nSettingsRow == ROW_APPLY)
 		{
+			s_nDrawBridgeSave = s_nDrawBridgeChoice;
 			if (!SaveConfig (s_ChipOptions[s_nChipChoice], s_SlowOptions[s_nSlowChoice], s_nAudioChoice, s_nStereoChoice))
 			{
 				s_pMenuMessage = "Impossibile salvare OMEGA.CFG sulla scheda";
@@ -1121,6 +1335,10 @@ static void SettingsKey (u8 ucKey)
 			if (s_nAudioChoice != s_nAudioActive)
 			{
 				StartAudio (s_nAudioChoice);
+			}
+			if (s_nDrawBridgeChoice != s_nDrawBridgeActive)
+			{
+				ApplyDrawBridge (s_nDrawBridgeChoice);
 			}
 			s_bSettings = FALSE;
 		}
@@ -1302,6 +1520,7 @@ static void JoyKey (u8 ucKey)
 		{
 			unsigned nChip = IndexOf (s_ChipOptions, CHIP_OPTIONS, chipRamSize / 1024);
 			unsigned nSlow = IndexOf (s_SlowOptions, SLOW_OPTIONS, slowRamSize / 1024);
+			s_nDrawBridgeSave = s_nDrawBridgeActive;
 			if (!SaveConfig (s_ChipOptions[nChip], s_SlowOptions[nSlow], s_nAudioActive, s_nStereoActive))
 			{
 				s_pMenuMessage = "Impossibile salvare OMEGA.CFG sulla scheda";
@@ -1495,8 +1714,6 @@ static unsigned s_nLoad = 0;			// % of real time spent emulating
 // F12: save a snapshot of the machine to the SD card (SNAP0001.BIN, ...) so the
 // screen can be reproduced and debugged on a PC (see Snapshot.c)
 
-static CString s_Message;
-static int s_nMessageFrames = 0;
 
 static int FatWriter (const void *pData, size_t nSize, void *pContext)
 {
@@ -1780,6 +1997,15 @@ int hostInit (void)
 		floppyAttach (i);
 	}
 
+	if (s_nDrawBridgeActive != DrawBridgeOff)
+	{
+		unsigned nChoice = s_nDrawBridgeActive;
+		s_nDrawBridgeActive = DrawBridgeOff;
+		printf ("Cerco il DrawBridge (floppy vero)...\n");
+		ApplyDrawBridge (nChoice);
+		printf ("%s\n", (const char *) s_Message);
+	}
+
 	CCPUThrottle *pCPU = pKernel->GetCPUThrottle ();
 	printf ("CPU %u MHz, tastiera: %s, mouse: %s\n",
 		pCPU->GetClockRate () / 1000000,
@@ -1876,6 +2102,7 @@ void hostDisplay (void)
 	s_nFramesThisSecond++;
 
 	UpdateDrives ();
+	CheckDrawBridge ();
 
 	if (nStart - s_nSecondStart >= 1000000)
 	{

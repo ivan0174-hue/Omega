@@ -66,6 +66,24 @@ void floppyState();     //Get the drive state for the CIA
 void floppySetState();  //Set the Drive State for the CIA
 
 
+// ---- Real floppy drive (e.g. DrawBridge) ----------------------------------
+// A drive can play a real disk instead of an ADF image: when the Amiga reads a
+// track that is not in the cache yet, the host's reader is called (it blocks
+// until the track has been read from the real drive).
+// The reader returns the raw MFM bit stream of (at least) one revolution,
+// MSB first, starting anywhere on the track; the number of bits, or <= 0 on
+// error (no disk, read error).
+typedef int (*FloppyTrackReader)(int drive, int cylinder, int side, uint8_t* bits, int maxBytes);
+#define FLOPPY_RAW_TRACK_BYTES 14336
+void floppySetTrackReader(FloppyTrackReader reader);
+int  floppyLoadLive(int drive);         // like floppyLoadImage, for the real disk (cache emptied)
+int  floppyIsLive(int drive);
+void floppyLiveFlush(void);             // forget the cached tracks (disk changed)
+// Raw stream helpers (also used by the tests)
+int  floppyFindRevolution(const uint8_t* bits, int nbits);
+int  floppyGoodSectors(const uint8_t* mfm, int len);
+int  floppyAlignTrack(const uint8_t* bits, int nbits, uint16_t sync, uint8_t* out, int maxBytes);
+
 void encodeBlock(uint8_t* source, uint8_t* destination,int size);
 uint8_t addClockBits(uint8_t previous, uint8_t value);
 void ADF2MFM(const uint8_t* adf, int size, uint8_t* mfm);

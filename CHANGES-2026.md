@@ -147,6 +147,27 @@ Outputs: SDL audio (desktop), HDMI or headphone jack (Pi, F5 menu),
 - Desktop: SDL game controllers (port 2; second one in port 1 with
   `OMEGA_PORT1=pad`), `OMEGA_KBJOY=1` for arrows + right Ctrl/Alt.
 
+## Real floppy drive (DrawBridge)
+
+- `DrawBridge.c`: client for Rob Smith's Arduino Floppy Disk Reader
+  firmware 1.x (version handshake, motor, seek, side, track read, disk
+  check; packed 2-bit flux codes decoded to MFM). The serial port comes from
+  the host; on the Pi it is a Circle USB serial device (FTDI, 2 Mbaud).
+- `Floppy.c`: a drive can play the disk in the real drive. A track is read
+  when the Amiga first reads it and kept in a cache: one revolution is cut
+  out of the ~1.1 turns read (a sector header found again one turn later),
+  the seam is moved into the track gap, and sync words are aligned to word
+  boundaries like Paula does (the `$AAAA $AAAA` preamble is kept next to the
+  sync: Kickstart 1.3 checks it). AmigaDOS tracks with bad sectors are read
+  again up to 8 times and the good sectors combined. Read only (the disk is
+  write protected for the Amiga).
+- Pi: F5 option "Floppy vero (DrawBridge)" (off / DF0: / DF1:), disk menu
+  entry to insert the real disk, boots from it at power-on if a disk is in.
+- Tested with a simulated Arduino speaking the real protocol
+  (`OMEGA_DRAWBRIDGE_SIM`): Workbench 1.3 boots pixel-identical to the ADF,
+  also with misread bits (one in 15,000 bits); ADF boot and snapshots
+  unchanged.
+
 ## Performance
 
 - Table-driven planar→chunky conversion (one lookup per plane per 8 pixels).

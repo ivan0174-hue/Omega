@@ -16,7 +16,7 @@ CIRCLEHOME ?= ../../circle
 VPATH = ..
 
 CORE	= CPU.o Memory.o Chipset.o DMA.o Blitter.o CIA.o Floppy.o Gayle.o \
-	  Render.o Input.o Snapshot.o Paula.o debug.o \
+	  Render.o Input.o Snapshot.o Paula.o DrawBridge.o debug.o \
 	  m68kcpu.o m68kops.o m68kopac.o m68kopdm.o m68kopnz.o m68kdasm.o
 
 OBJS	= pimain.o kernel.o HostCircle.o libc.o omega_main.o $(CORE)

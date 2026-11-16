@@ -11,7 +11,7 @@ SDL_CFLAGS := $(shell sdl2-config --cflags 2>/dev/null)
 SDL_LIBS   := $(shell sdl2-config --libs 2>/dev/null || echo -lSDL2)
 
 CORE = main.c CPU.c Memory.c Chipset.c DMA.c Blitter.c CIA.c Floppy.c Gayle.c \
-       Render.c Input.c Snapshot.c Paula.c debug.c \
+       Render.c Input.c Snapshot.c Paula.c DrawBridge.c debug.c \
        m68kcpu.c m68kops.c m68kopac.c m68kopdm.c m68kopnz.c m68kdasm.c
 
 all: omega

@@ -17,6 +17,8 @@ Novità rispetto all'originale (dettagli in [CHANGES-2026.md](CHANGES-2026.md)):
   scroll, tempi del copper, area fill e line mode del blitter
 - audio (Paula) su HDMI o jack, con il filtro dell'A500
 - joystick: gamepad USB e joystick da tastiera con tasti configurabili
+- floppy vero: legge i dischi originali con un
+  [DrawBridge](https://github.com/RobSmithDev/ArduinoFloppyDiskReader) (Arduino) collegato alla USB
 - menu dischi (F1-F4), impostazioni (F5: memoria chip/slow, audio,
   joystick), istantanee (F12), reset completo
 - correzioni di crash e di memoria; la versione desktop SDL e quella

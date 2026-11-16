@@ -212,6 +212,12 @@ static int harnessFrame(void){
             if(floppyLoadImage(0,image2,n)) pendingInsert = 1;
         }
     }
+    // OMEGA_LIVE_AT=<frame>: insert the real disk (DrawBridge, see HostNull.c) in DF0:
+    if(frames == harnessEnvInt("OMEGA_LIVE_AT") && getenv("OMEGA_DRAWBRIDGE_SIM")){
+        floppyEjectDisk(0);
+        if(floppyLoadLive(0)) pendingInsert = 1;
+        fprintf(stderr, "frame %d: real disk in DF0:\n", frames);
+    }
     if(pendingInsert && floppyInsertDisk(0)){
         pendingInsert = 0;
     }

@@ -53,7 +53,29 @@ IMPOSTAZIONI (F5)
     piu' piacevole in cuffia; mono.
   Il filtro audio dell'Amiga 500 e' emulato: si attiva insieme alla luce
   di accensione piena, come sull'originale.
+  - "Floppy vero (DrawBridge)": spento, come DF0: o come DF1:. Vedi sotto.
   - "Joystick, gamepad e tasti...": vedi sotto.
+
+FLOPPY VERO (DRAWBRIDGE)
+  Con un DrawBridge (Arduino Floppy Disk Reader di Rob Smith,
+  amiga.robsmithdev.co.uk) l'Amiga legge i dischi veri, traccia per
+  traccia, come un drive Amiga.
+  - Collega il DrawBridge a una porta USB del Pi. L'adattatore USB-seriale
+    deve essere FTDI: i cloni con chip CH340 non vanno abbastanza veloci.
+    Il drive va alimentato come per l'uso con il PC.
+  - F5 > "Floppy vero (DrawBridge)" > "come DF0:" (o DF1:) > Salva.
+    La scelta resta salvata: alle accensioni successive, se c'e' un disco
+    nel drive vero, l'Amiga parte da quello come un Amiga vero.
+  - Quando cambi disco nel drive vero, premi F1 (F2 se e' DF1:) e scegli
+    "<< disco nel drive vero (DrawBridge) >>": l'Amiga vede il cambio di
+    disco. Nello stesso menu puoi sempre mettere un file .adf.
+  - Ogni traccia si legge una volta sola (circa un quarto di secondo) e
+    resta in memoria: la musica si interrompe un attimo durante le letture.
+    Se un settore e' letto male, la traccia viene riletta fino a 8 volte e
+    i settori buoni vengono messi insieme.
+  - Solo lettura: per l'Amiga il disco e' protetto da scrittura (i
+    salvataggi non vanno sul disco vero).
+  - In F5 vedi se il DrawBridge e' collegato e quante tracce ha letto.
 
 JOYSTICK E GAMEPAD
   Gamepad USB (Xbox 360/One con filo, PlayStation 3/4, Switch Pro, 8BitDo e

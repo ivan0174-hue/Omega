@@ -84,6 +84,31 @@ tastiera con tasti configurabili (pagina dal menu F5). Chiavi in OMEGA.CFG:
 `joykb`, `joykeys` (codici HID, modificatori 224-231), `padb`, `padstart`,
 `port1=mouse|pad`.
 
+## Floppy vero (DrawBridge)
+
+`DrawBridge.c` parla con il firmware 1.x dell'[Arduino Floppy Disk
+Reader](https://github.com/RobSmithDev/ArduinoFloppyDiskReader) di Rob Smith
+(comandi `xR?`, `+`, `-`, `#NN`, `[`/`]`, `<`, `^`; 2 Mbaud). Sul Pi la porta
+è un `CUSBSerialDevice` di Circle (`utty1`..`utty4`, driver FTDI). Quando
+l'Amiga legge una traccia non ancora letta, `Floppy.c` chiama il lettore
+(bloccante, ~0,25 s): flusso MFM grezzo di ~1,1 giri → lunghezza di un giro
+(dall'intestazione di un settore ripetuta) → giunzione spostata nello spazio
+tra i settori → sync allineati a 16 bit come fa Paula (preambolo `$AAAA`
+conservato, Kickstart 1.3 lo controlla) → se è una traccia AmigaDOS con
+settori rovinati, fino a 8 letture e unione dei settori buoni. Sola lettura
+(disco protetto da scrittura). Opzione in F5 (`drawbridge=off|df0|df1`).
+
+Prova senza hardware (versione headless):
+
+```sh
+OMEGA_DRAWBRIDGE_SIM=disco.adf OMEGA_LIVE_AT=700 OMEGA_SHOT_AT=3000 \
+OMEGA_SHOT_FILE=wb.ppm ./omega-headless kick13.rom
+```
+
+simula l'Arduino con quel disco nel drive (protocollo vero, indice in un
+punto a caso, `OMEGA_DRAWBRIDGE_JITTER=N` perde un bit ogni N);
+`OMEGA_FLOPPY_DEBUG=1` mostra ogni traccia letta.
+
 ## Limiti attuali
 
 - Le immagini compresse (.adz, .dms, .zip) non sono supportate.
