@@ -62,7 +62,10 @@ FLOPPY VERO (DRAWBRIDGE)
   traccia, come un drive Amiga.
   - Collega il DrawBridge a una porta USB del Pi. L'adattatore USB-seriale
     deve essere FTDI: i cloni con chip CH340 non vanno abbastanza veloci.
-    Il drive va alimentato come per l'uso con il PC.
+    Il drive va alimentato come per l'uso con il PC, con un alimentatore
+    capace di almeno 1 A: quando il motore parte assorbe molto, e se i 5 V
+    arrivano dall'Arduino o dalla USB possono calare e far ripartire
+    l'Arduino (il disco si legge solo la prima volta, poi errori).
   - F5 > "Floppy vero (DrawBridge)" > "come DF0:" (o DF1:) > Salva.
     La scelta resta salvata: alle accensioni successive, se c'e' un disco
     nel drive vero, l'Amiga parte da quello come un Amiga vero.

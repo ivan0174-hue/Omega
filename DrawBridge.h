@@ -51,6 +51,7 @@ void    dbIdle(void);
 // Statistics for the status line
 extern int dbTracksRead, dbReadErrors;
 extern int dbDataLost;                  // reads that arrived incomplete (bytes lost on the USB link)
+extern int dbNotSpinning;               // times no data came from the drive after starting the motor
 extern int dbLastPackedBytes, dbLastBits;   // last read: bytes received, MFM bits decoded
 extern uint32_t dbLastReadUs;           // last read: time taken (us)
 const uint8_t* dbLastPacked(void);      // last read: the bytes as received (diagnostics)

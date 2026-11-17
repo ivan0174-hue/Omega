@@ -165,6 +165,9 @@ Outputs: SDL audio (desktop), HDMI or headphone jack (Pi, F5 menu),
   arrive incomplete (bytes lost on the USB link) are counted; after an error
   the client reconnects instead of giving up. Read only (the disk is write
   protected for the Amiga).
+- Before reading after the motor starts, check that data comes from the head
+  ('^'); the firmware's track read has no timeout and would hang if the disk
+  does not turn. Motor off after 8 s idle (was 3 s).
 - Disk menu: real drive diagnostics (reads tracks 0, 1, 80, 159 three times;
   time, bytes, bits, revolution, good sectors; DBTEST.TXT and DBRAW.BIN).
 - Pi: F5 option "Floppy vero (DrawBridge)" (off / DF0: / DF1:), disk menu

@@ -22,10 +22,10 @@
 
 #define REPLY_TIMEOUT   2000000u    // us: motor spin-up and long seeks
 #define DATA_TIMEOUT     600000u    // us without data while reading a track
-#define MOTOR_IDLE_US   3000000u    // motor off after 3 s without reads
+#define MOTOR_IDLE_US   8000000u    // motor off after 8 s without reads
 #define PACKED_MAX      16384
 
-int dbTracksRead = 0, dbReadErrors = 0, dbDataLost = 0;
+int dbTracksRead = 0, dbReadErrors = 0, dbDataLost = 0, dbNotSpinning = 0;
 int dbLastPackedBytes = 0, dbLastBits = 0;
 uint32_t dbLastReadUs = 0;
 
@@ -131,7 +131,7 @@ int dbDiskPresent(void){
     if(state != DB_READY || firmwareMinor < 18) return -1;
     int r = command("^", 1, REPLY_TIMEOUT);
     int wp = readByte(REPLY_TIMEOUT);
-    motorOn = 0;                    // the firmware stops the motor after the test
+    // (the firmware stops the motor after the test only if it was off before)
     if(r < 0 || wp < 0) return -1;
     return r == '1';
 }
@@ -154,11 +154,33 @@ int dbUnpack(const uint8_t* in, int count, uint8_t* bits, int maxBytes){
     return n;
 }
 
+static int spinning(void){
+    int r = command("^", 1, REPLY_TIMEOUT);
+    int wp = readByte(REPLY_TIMEOUT);
+    return r == '1' && wp >= 0;
+}
+
 static int readOnce(int cylinder, int side, uint8_t* bits, int maxBytes){
     char cmd[4];
     if(!motorOn){
         if(command("+", 1, REPLY_TIMEOUT) != '1') return -1;
         motorOn = 1;
+        // The firmware's track read waits for flux transitions with no time
+        // limit: if the disk is not turning (no disk, a drive that did not
+        // start, power too weak for the motor) it would hang until the
+        // Arduino is reset. So first check that data is coming from the head
+        // ('^' gives up after ~0.2 s); if not, switch the motor off and on
+        // once more.
+        if(firmwareMinor >= 18 && !spinning()){
+            command("-", 1, REPLY_TIMEOUT);
+            motorOn = 0;
+            if(command("+", 1, REPLY_TIMEOUT) != '1') return -1;
+            motorOn = 1;
+            if(!spinning()){
+                dbNotSpinning++;
+                return -1;
+            }
+        }
     }
     if(cylinder != headCylinder){
         cmd[0] = '#'; cmd[1] = (char)('0' + cylinder / 10); cmd[2] = (char)('0' + cylinder % 10);

@@ -870,7 +870,11 @@ static void RunDrawBridgeTest (void)
 	}
 
 	y += 8;
-	if (nLost > 0)
+	if (dbNotSpinning > 0)
+	{
+		Line = "Il disco a volte non gira: alimentazione del drive troppo debole?";
+	}
+	else if (nLost > 0)
 	{
 		Line.Format ("%d letture incomplete: byte persi sul collegamento USB.", nLost);
 	}
@@ -1363,8 +1367,8 @@ static void DrawSettings (void)
 	CString Db;
 	if (s_pDrawBridgeSerial != 0 && dbState () == DB_READY)
 	{
-		Db.Format (" Floppy vero: DrawBridge %s collegato, %d tracce lette, %d errori. Disco: F1 (o F2)",
-			   dbVersion (), dbTracksRead, dbReadErrors);
+		Db.Format (" DrawBridge %s: %d tracce lette, %d errori, %d incomplete, %d senza rotazione",
+			   dbVersion (), dbTracksRead, dbReadErrors, dbDataLost, dbNotSpinning);
 	}
 	else
 	{
