@@ -341,6 +341,7 @@ int floppyLoadImage(int drive, const uint8_t* adf, int size){
 #define REV_MAX_BITS    110000
 
 static FloppyTrackReader trackReader = NULL;
+int floppyLastTrackGood = 0, floppyLastTrackReads = 0;
 
 // OMEGA_FLOPPY_DEBUG=1 (desktop builds): report every real track read
 #ifdef AARCH
@@ -595,10 +596,10 @@ int floppyGoodSectors(const uint8_t* m, int len){
 }
 
 // Read a track from the real drive. An AmigaDOS track with damaged sectors is
-// read again (up to 8 times) and the good copies of each sector are put
+// read again (up to 20 times) and the good copies of each sector are put
 // together, like the DrawBridge software does; otherwise a misread bit would
 // stay in the cache for good.
-#define READ_TRIES 8
+#define READ_TRIES 20             // most tracks need one read; stop early when nothing improves
 static uint8_t tryBuf[FLOPPY_RAW_TRACK_BYTES];
 static uint8_t alignTry[READ_TRIES][TRACK_AREA];
 
@@ -646,9 +647,96 @@ static int combineReads(int tries, const int* alignLen, int* outLen){
     return floppyGoodSectors(mergeBuf, len);
 }
 
+// Good sectors collected from all the reads of a track (AmigaDOS format)
+typedef struct{
+    int      have;
+    uint8_t  label[16];
+    uint8_t  data[512];
+}SectorCopy;
+static SectorCopy collected[11];
+
+static uint32_t decodeLong(const uint8_t* p){
+    return ((mfmLong(p) & 0x55555555) << 1) | (mfmLong(p + 4) & 0x55555555);
+}
+
+static void decodeBlock(const uint8_t* mfm, uint8_t* out, int size){   // odd bits, then even bits
+    for(int i=0;i<size;i++) out[i] = (uint8_t)(((mfm[i] & 0x55) << 1) | (mfm[i + size] & 0x55));
+}
+
+static void collectSectors(const uint8_t* m, int len, int track){
+    FoundSector f[MAX_FOUND];
+    int n = scanSectors(m, len, f);
+    for(int k=0;k<n;k++){
+        if(!f[k].ok || f[k].sector >= 11 || collected[f[k].sector].have) continue;
+        int first = (m[f[k].pos + 2] == 0x44 && m[f[k].pos + 3] == 0x89) ? f[k].pos : f[k].pos - 2;
+        const uint8_t* h = m + first + 4;           // info
+        uint32_t info = decodeLong(h);
+        if(((info >> 16) & 0xFF) != (uint32_t)track) continue;   // read on the wrong track
+        SectorCopy* c = &collected[f[k].sector];
+        decodeBlock(h + 8, c->label, 16);
+        decodeBlock(h + 56, c->data, 512);
+        c->have = 1;
+    }
+}
+
+static int collectedCount(void){
+    int n = 0;
+    for(int i=0;i<11;i++) n += collected[i].have;
+    return n;
+}
+
+static void putOddEven(uint8_t* mfm, const uint8_t* src, int size){
+    for(int i=0;i<size;i++){
+        mfm[i]        = (src[i] >> 1) & 0x55;
+        mfm[i + size] = src[i] & 0x55;
+    }
+}
+
+static uint32_t mfmChecksum(const uint8_t* mfm, int size){
+    uint32_t sum = 0;
+    for(int i=0;i<size;i+=4) sum ^= mfmLong(mfm + i);
+    return sum & 0x55555555;
+}
+
+// A clean AmigaDOS track (as written by trackdisk) from the 11 collected sectors
+static int buildTrack(uint8_t* m, int track){
+    memset(m, 0, 12668);
+    for(int sct=0;sct<11;sct++){
+        uint8_t* p = m + sct * 1088;
+        p[0] = p[1] = p[2] = p[3] = 0;              // preamble: two zero words
+        p[4] = 0x44; p[5] = 0x89; p[6] = 0x44; p[7] = 0x89;
+        uint8_t info[4] = {0xFF, (uint8_t)track, (uint8_t)sct, (uint8_t)(11 - sct)};
+        putOddEven(p + 8, info, 4);
+        putOddEven(p + 16, collected[sct].label, 16);
+        uint8_t sum[4];
+        uint32_t h = mfmChecksum(p + 8, 40);
+        sum[0] = (uint8_t)(h >> 24); sum[1] = (uint8_t)(h >> 16); sum[2] = (uint8_t)(h >> 8); sum[3] = (uint8_t)h;
+        putOddEven(p + 48, sum, 4);
+        putOddEven(p + 64, collected[sct].data, 512);
+        uint32_t dsum = mfmChecksum(p + 64, 1024);
+        sum[0] = (uint8_t)(dsum >> 24); sum[1] = (uint8_t)(dsum >> 16); sum[2] = (uint8_t)(dsum >> 8); sum[3] = (uint8_t)dsum;
+        putOddEven(p + 56, sum, 4);
+    }
+    // clock bits everywhere except the sync words: 1 between two data zeros
+    for(int b=0;b<12668*8;b+=2){
+        int byte = b >> 3;
+        int inSync = 0;
+        if(byte < 11968){
+            int o = byte % 1088;
+            inSync = o >= 4 && o < 8;
+        }
+        if(inSync) continue;
+        int prev = b > 0 ? getBit(m, b - 1) : 0;
+        int next = getBit(m, b + 1);
+        putBit(m, b, !(prev | next));
+    }
+    return 12668;
+}
+
 static void readLiveTrack(int d, int t){
     int alignLen[READ_TRIES];
-    int tries = 0, bestGood = -1, bestBits = 0;
+    int tries = 0, bestGood = -1, bestBits = 0, lastCount = 0, lastProgress = 0;
+    memset(collected, 0, sizeof collected);
     for(int attempt=0; attempt<READ_TRIES; attempt++){
         int n = trackReader ? trackReader(d, t >> 1, t & 1, tryBuf, FLOPPY_RAW_TRACK_BYTES) : -1;
         if(n <= 0){
@@ -659,25 +747,37 @@ static void readLiveTrack(int d, int t){
         alignLen[tries] = floppyAlignTrack(tryBuf, n, 0x4489, alignTry[tries], TRACK_AREA);
         normalizeSectors(alignTry[tries], alignLen[tries]);
         int good = floppyGoodSectors(alignTry[tries], alignLen[tries]);
-        if(floppyDebug()) fprintf(stderr, "real track %d: %d bits per revolution, %d good sectors\n", t, n, good);
+        collectSectors(alignTry[tries], alignLen[tries], t);
+        if(floppyDebug()) fprintf(stderr, "real track %d: %d bits per revolution, %d good sectors, %d collected\n", t, n, good, collectedCount());
         if(good > bestGood){
             bestGood = good; bestBits = n;
             memcpy(liveRaw[t], tryBuf, FLOPPY_RAW_TRACK_BYTES);
         }
         tries++;
-        if(good == 0 || good >= 11) break;      // not AmigaDOS, or complete
+        if(good >= 11) break;                   // complete as read
+        if(collectedCount() == 11){
+            // every sector has been read correctly at least once: write the
+            // track out clean, as trackdisk would have written it
+            memset(liveRaw[t], 0, FLOPPY_RAW_TRACK_BYTES);
+            bestBits = buildTrack(liveRaw[t], t) * 8;
+            bestGood = 11;
+            if(floppyDebug()) fprintf(stderr, "real track %d: rebuilt from %d reads\n", t, tries);
+            break;
+        }
+        if(good == 0 && collectedCount() == 0 && attempt >= 1) break;   // not AmigaDOS: keep the raw read
+        if(collectedCount() > lastCount){ lastCount = collectedCount(); lastProgress = attempt; }
+        if(attempt - lastProgress >= 6) break;  // six reads without a new good sector: the disk is damaged here
         int len = 0;
         int good2 = combineReads(tries, alignLen, &len);
-        if(floppyDebug()) fprintf(stderr, "real track %d: %d good sectors after combining %d reads\n", t, good2, tries);
         if(good2 > bestGood){
-            // the combined track is already sync aligned: keep it as the "raw" stream
             memset(liveRaw[t], 0, FLOPPY_RAW_TRACK_BYTES);
             memcpy(liveRaw[t], mergeBuf, (size_t)len);
             bestBits = len * 8;
             bestGood = good2;
         }
-        if(bestGood >= 11) break;
     }
+    floppyLastTrackGood = bestGood;
+    floppyLastTrackReads = tries;
     liveRawBits[t] = bestBits > 0 ? bestBits : -1;
 }
 

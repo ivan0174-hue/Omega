@@ -40,7 +40,7 @@ DbState dbState(void);
 const char* dbVersion(void);                // e.g. "V1.9"
 int     dbDiskPresent(void);                // 1 yes, 0 no, -1 unknown (firmware < 1.8 or error)
 
-// Read one track: raw MFM bits of ~1.1 revolutions from the index hole, MSB
+// Read one track: raw MFM bits of ~1.1 revolutions (starting anywhere), MSB
 // first. Returns the number of bits, <= 0 on error. Turns the motor on when
 // needed. Matches FloppyTrackReader (Floppy.h).
 int     dbReadTrack(int drive, int cylinder, int side, uint8_t* bits, int maxBytes);
@@ -50,6 +50,10 @@ void    dbIdle(void);
 
 // Statistics for the status line
 extern int dbTracksRead, dbReadErrors;
+extern int dbDataLost;                  // reads that arrived incomplete (bytes lost on the USB link)
+extern int dbLastPackedBytes, dbLastBits;   // last read: bytes received, MFM bits decoded
+extern uint32_t dbLastReadUs;           // last read: time taken (us)
+const uint8_t* dbLastPacked(void);      // last read: the bytes as received (diagnostics)
 
 // Decoding of the packed stream sent by the firmware (exposed for tests):
 // each byte holds four 2-bit codes, 01 = "01", 10 = "001", 11 = "0001".

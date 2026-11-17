@@ -690,6 +690,7 @@ static void UpdateDrives (void)
 enum TEntryType
 {
 	EntryRealDisk,
+	EntryRealDiskTest,
 	EntryEject,
 	EntryParent,
 	EntryFolder,
@@ -722,6 +723,8 @@ static void ReadFolder (void)
 	{
 		s_Entries[s_nEntries].Type = EntryRealDisk;
 		CopyString (s_Entries[s_nEntries++].Name, "<< disco nel drive vero (DrawBridge) >>", FF_MAX_LFN + 1);
+		s_Entries[s_nEntries].Type = EntryRealDiskTest;
+		CopyString (s_Entries[s_nEntries++].Name, "<< prova del drive vero (diagnostica) >>", FF_MAX_LFN + 1);
 	}
 	s_Entries[s_nEntries].Type = EntryEject;
 	CopyString (s_Entries[s_nEntries++].Name, "<< nessun disco (estrai) >>", FF_MAX_LFN + 1);
@@ -792,6 +795,105 @@ static void ReadFolder (void)
 	{
 		s_pMenuMessage = "Nessun file .adf in questa cartella";
 	}
+}
+
+// Diagnostics: read a few tracks several times and show what arrives.
+// Results also go to SD:/DBTEST.TXT, the bytes received to SD:/DBRAW.BIN.
+static boolean s_bTestShown = FALSE;
+static uint8_t s_TestBits[FLOPPY_RAW_TRACK_BYTES];
+static uint8_t s_TestAligned[12798];
+
+static void RunDrawBridgeTest (void)
+{
+	const unsigned nTop = MENU_TOP;
+	FillRect (0, nTop, SCREEN_W, 2 * PI_ROWS, COLOR_BACK);
+	DrawText (0, nTop, " Prova del drive vero (DrawBridge)", COLOR_SELTEXT, COLOR_TEXT, 80, TRUE);
+	unsigned y = nTop + 24;
+
+	CString Report;
+	if (!ConnectDrawBridge ())
+	{
+		DrawText (8, y, "DrawBridge non trovato sulla USB (serve un adattatore FTDI).", COLOR_SELBACK, COLOR_BACK, 78, TRUE);
+		DrawText (8, nTop + 2 * PI_ROWS - 16, "Premi un tasto", COLOR_DIM, COLOR_BACK, 78, TRUE);
+		return;
+	}
+	int nPresent = dbDiskPresent ();
+	CString Line;
+	Line.Format ("Firmware %s, disco nel drive: %s", dbVersion (),
+		     nPresent == 1 ? "si'" : nPresent == 0 ? "NO" : "?");
+	DrawText (8, y, (const char *) Line, COLOR_TEXT, COLOR_BACK, 78, TRUE);
+	Report.Append ((const char *) Line); Report.Append ("\n");
+	y += 20;
+	DrawText (8, y, "traccia lett.  ms   byte    bit     giro   settori", COLOR_DIM, COLOR_BACK, 78, TRUE);
+	Report.Append ("track read ms bytes bits revolution good_sectors\n");
+	y += 16;
+
+	FIL Raw;
+	boolean bRaw = f_open (&Raw, ROOT "DBRAW.BIN", FA_WRITE | FA_CREATE_ALWAYS) == FR_OK;
+
+	static const unsigned Tracks[] = {0, 1, 80, 159};
+	int nLost = 0, nComplete = 0;
+	for (unsigned t = 0; t < sizeof Tracks / sizeof Tracks[0]; t++)
+	{
+		for (unsigned r = 0; r < 3; r++)
+		{
+			int nLostBefore = dbDataLost;
+			int n = dbReadTrack (0, Tracks[t] / 2, Tracks[t] % 2, s_TestBits, sizeof s_TestBits);
+			int nRev = 0, nGood = 0;
+			if (n > 0)
+			{
+				nRev = floppyFindRevolution (s_TestBits, n);
+				int nLen = floppyAlignTrack (s_TestBits, nRev, 0x4489, s_TestAligned, sizeof s_TestAligned);
+				nGood = floppyGoodSectors (s_TestAligned, nLen);
+			}
+			boolean bLost = dbDataLost != nLostBefore;
+			nLost += bLost;
+			nComplete += nGood >= 11;
+			Line.Format ("%5u    %u  %5u  %5d  %6d  %6d   %2d/11%s", Tracks[t], r + 1,
+				     dbLastReadUs / 1000, dbLastPackedBytes, n, nRev, nGood,
+				     n <= 0 ? "  ERRORE" : bLost ? "  dati persi" : "");
+			DrawText (8, y, (const char *) Line, nGood >= 11 ? COLOR_TEXT : COLOR_SELBACK, COLOR_BACK, 78, TRUE);
+			Report.Append ((const char *) Line); Report.Append ("\n");
+			y += 16;
+			if (bRaw)
+			{
+				u32 Header[4] = {0x44425257, Tracks[t], (u32) dbLastPackedBytes, (u32) n};	// "DBRW"
+				UINT nW;
+				f_write (&Raw, Header, sizeof Header, &nW);
+				f_write (&Raw, dbLastPacked (), (UINT) dbLastPackedBytes, &nW);
+			}
+		}
+	}
+	if (bRaw)
+	{
+		f_close (&Raw);
+	}
+
+	y += 8;
+	if (nLost > 0)
+	{
+		Line.Format ("%d letture incomplete: byte persi sul collegamento USB.", nLost);
+	}
+	else if (nComplete == 12)
+	{
+		Line = "Tutto bene: tutte le letture complete e corrette.";
+	}
+	else
+	{
+		Line = "Dati arrivati interi ma settori sbagliati: lettura del disco imprecisa.";
+	}
+	DrawText (8, y, (const char *) Line, COLOR_TEXT, COLOR_BACK, 78, TRUE);
+	Report.Append ((const char *) Line); Report.Append ("\n");
+
+	FIL Text;
+	if (f_open (&Text, ROOT "DBTEST.TXT", FA_WRITE | FA_CREATE_ALWAYS) == FR_OK)
+	{
+		UINT nW;
+		f_write (&Text, (const char *) Report, Report.GetLength (), &nW);
+		f_close (&Text);
+		DrawText (8, y + 20, "Salvati DBTEST.TXT e DBRAW.BIN sulla scheda SD.", COLOR_DIM, COLOR_BACK, 78, TRUE);
+	}
+	DrawText (8, nTop + 2 * PI_ROWS - 16, "Premi un tasto per tornare al menu", COLOR_DIM, COLOR_BACK, 78, TRUE);
 }
 
 static void DrawMenu (void)
@@ -877,6 +979,11 @@ static void MenuKey (u8 ucKey)
 {
 	s_bMenuDirty = TRUE;
 	s_pMenuMessage = 0;
+	if (s_bTestShown)
+	{
+		s_bTestShown = FALSE;		// any key: back to the list
+		return;
+	}
 
 	switch (ucKey)
 	{
@@ -906,6 +1013,12 @@ static void MenuKey (u8 ucKey)
 			{
 				s_bMenu = FALSE;
 			}
+			break;
+
+		case EntryRealDiskTest:
+			RunDrawBridgeTest ();
+			s_bTestShown = TRUE;		// results stay on screen until a key is pressed
+			s_bMenuDirty = FALSE;
 			break;
 
 		case EntryEject:

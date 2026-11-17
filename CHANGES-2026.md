@@ -159,13 +159,20 @@ Outputs: SDL audio (desktop), HDMI or headphone jack (Pi, F5 menu),
   the seam is moved into the track gap, and sync words are aligned to word
   boundaries like Paula does (the `$AAAA $AAAA` preamble is kept next to the
   sync: Kickstart 1.3 checks it). AmigaDOS tracks with bad sectors are read
-  again up to 8 times and the good sectors combined. Read only (the disk is
-  write protected for the Amiga).
+  again (up to 20 times, stopping after 6 reads without progress); every
+  sector read correctly once is kept, and when all 11 are there the track is
+  rebuilt clean. Reads start at once (no wait for the index hole); reads that
+  arrive incomplete (bytes lost on the USB link) are counted; after an error
+  the client reconnects instead of giving up. Read only (the disk is write
+  protected for the Amiga).
+- Disk menu: real drive diagnostics (reads tracks 0, 1, 80, 159 three times;
+  time, bytes, bits, revolution, good sectors; DBTEST.TXT and DBRAW.BIN).
 - Pi: F5 option "Floppy vero (DrawBridge)" (off / DF0: / DF1:), disk menu
   entry to insert the real disk, boots from it at power-on if a disk is in.
 - Tested with a simulated Arduino speaking the real protocol
   (`OMEGA_DRAWBRIDGE_SIM`): Workbench 1.3 boots pixel-identical to the ADF,
-  also with misread bits (one in 15,000 bits); ADF boot and snapshots
+  also with misread bits (one in 9,000 bits) or lost USB packets (one in
+  100), after a reset and after a disk change; ADF boot and snapshots
   unchanged.
 
 ## Performance

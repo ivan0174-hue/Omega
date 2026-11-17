@@ -213,7 +213,13 @@ static int harnessFrame(void){
         }
     }
     // OMEGA_LIVE_AT=<frame>: insert the real disk (DrawBridge, see HostNull.c) in DF0:
-    if(frames == harnessEnvInt("OMEGA_LIVE_AT") && getenv("OMEGA_DRAWBRIDGE_SIM")){
+    // OMEGA_LIVE2_AT=<frame>: take the disk out and put the real disk in again 4 s later (disk change)
+    static int liveAgainAt = -1;
+    if(frames == harnessEnvInt("OMEGA_LIVE2_AT") && getenv("OMEGA_DRAWBRIDGE_SIM")){
+        floppyEjectDisk(0);
+        liveAgainAt = frames + 200;
+    }
+    if((frames == harnessEnvInt("OMEGA_LIVE_AT") || frames == liveAgainAt) && getenv("OMEGA_DRAWBRIDGE_SIM")){
         floppyEjectDisk(0);
         if(floppyLoadLive(0)) pendingInsert = 1;
         fprintf(stderr, "frame %d: real disk in DF0:\n", frames);

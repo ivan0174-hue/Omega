@@ -10,7 +10,7 @@
 //    '#' NN        seek to cylinder NN (two digits)     -> '1' / '0'
 //    '[' / ']'     upper (head 1) / lower (head 0) side -> '1'
 //    '<'           read track                           -> '1', then the host
-//                  sends 1 (start at the index hole), then packed data bytes
+//                  sends 0 (start now) or 1 (at the index hole), then packed data bytes
 //                  terminated by 0
 //    '^'           disk present? (firmware 1.8+)        -> '1'/'#', '1'/'#'(protected)
 //
@@ -25,7 +25,9 @@
 #define MOTOR_IDLE_US   3000000u    // motor off after 3 s without reads
 #define PACKED_MAX      16384
 
-int dbTracksRead = 0, dbReadErrors = 0;
+int dbTracksRead = 0, dbReadErrors = 0, dbDataLost = 0;
+int dbLastPackedBytes = 0, dbLastBits = 0;
+uint32_t dbLastReadUs = 0;
 
 static const DbPort* port = 0;
 static DbState state = DB_NOT_FOUND;
@@ -168,7 +170,7 @@ static int readOnce(int cylinder, int side, uint8_t* bits, int maxBytes){
         headSide = side;
     }
     if(command("<", 1, REPLY_TIMEOUT) != '1') return -1;
-    if(!send("\1", 1)) return -1;                   // start at the index hole
+    if(!send("\0", 1)) return -1;                   // start at once (no need to wait for the index hole)
     int count = 0;
     for(;;){
         int c = readByte(DATA_TIMEOUT);
@@ -176,13 +178,32 @@ static int readOnce(int cylinder, int side, uint8_t* bits, int maxBytes){
         if(c == 0) break;
         if(count < PACKED_MAX) packed[count++] = (uint8_t)c;
     }
-    return dbUnpack(packed, count, bits, maxBytes);
+    dbLastPackedBytes = count;
+    int n = dbUnpack(packed, count, bits, maxBytes);
+    dbLastBits = n;
+    // the firmware sends codes until it has 111104 bits: fewer means bytes were lost on the way
+    if(n < (0x1900*2 + 0x440) * 8 - 256){
+        dbDataLost++;
+    }
+    return n;
 }
 
 int dbReadTrack(int drive, int cylinder, int side, uint8_t* bits, int maxBytes){
     (void)drive;
-    if(state != DB_READY || cylinder < 0 || cylinder > 83) return -1;
+    if(!port || cylinder < 0 || cylinder > 83) return -1;
+    if(state != DB_READY){
+        // lost contact earlier (e.g. a read went wrong): try again, at most every 2 s,
+        // instead of giving up for the rest of the session
+        static uint32_t lastTry = 0;
+        static int tried = 0;
+        if(tried && port->micros() - lastTry < 2000000u) return -1;
+        tried = 1;
+        lastTry = port->micros();
+        rxFlush();
+        if(!dbOpen(port)) return -1;
+    }
     lastUse = port->micros();
+    uint32_t t0 = lastUse;
     int n = readOnce(cylinder, side, bits, maxBytes);
     if(n <= 0){
         // resynchronise with the firmware and try again once
@@ -195,10 +216,13 @@ int dbReadTrack(int drive, int cylinder, int side, uint8_t* bits, int maxBytes){
         }
     }
     lastUse = port ? port->micros() : 0;
+    dbLastReadUs = lastUse - t0;
     if(n > 0) dbTracksRead++; else dbReadErrors++;
-    if(n <= 0 && state == DB_NOT_FOUND) state = DB_ERROR;
+    if(n <= 0 && state == DB_NOT_FOUND) state = DB_ERROR;    // retried on the next read
     return n;
 }
+
+const uint8_t* dbLastPacked(void){ return packed; }
 
 void dbIdle(void){
     if(state == DB_READY && motorOn && port->micros() - lastUse > MOTOR_IDLE_US){

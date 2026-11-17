@@ -71,8 +71,13 @@ FLOPPY VERO (DRAWBRIDGE)
     disco. Nello stesso menu puoi sempre mettere un file .adf.
   - Ogni traccia si legge una volta sola (circa un quarto di secondo) e
     resta in memoria: la musica si interrompe un attimo durante le letture.
-    Se un settore e' letto male, la traccia viene riletta fino a 8 volte e
-    i settori buoni vengono messi insieme.
+    Se un settore e' letto male la traccia viene riletta (fino a 20 volte)
+    e ogni settore letto bene una volta viene tenuto: quando ci sono tutti,
+    la traccia viene ricostruita pulita.
+  - Problemi? Nel menu F1 scegli "<< prova del drive vero (diagnostica) >>":
+    legge alcune tracce 3 volte e mostra tempi, byte ricevuti e settori
+    buoni (in rosso le letture con problemi). Salva DBTEST.TXT e DBRAW.BIN
+    sulla scheda: sono utili per capire il problema.
   - Solo lettura: per l'Amiga il disco e' protetto da scrittura (i
     salvataggi non vanno sul disco vero).
   - In F5 vedi se il DrawBridge e' collegato e quante tracce ha letto.

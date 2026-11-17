@@ -78,7 +78,8 @@ typedef int (*FloppyTrackReader)(int drive, int cylinder, int side, uint8_t* bit
 void floppySetTrackReader(FloppyTrackReader reader);
 int  floppyLoadLive(int drive);         // like floppyLoadImage, for the real disk (cache emptied)
 int  floppyIsLive(int drive);
-void floppyLiveFlush(void);             // forget the cached tracks (disk changed)
+void floppyLiveFlush(void);
+extern int floppyLastTrackGood, floppyLastTrackReads;   // last real track: good sectors, reads needed             // forget the cached tracks (disk changed)
 // Raw stream helpers (also used by the tests)
 int  floppyFindRevolution(const uint8_t* bits, int nbits);
 int  floppyGoodSectors(const uint8_t* mfm, int len);

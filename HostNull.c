@@ -108,6 +108,14 @@ static int simRead(void* data, int count){
     int n = simOutCount - simOutHead;
     if(n > count) n = count;
     if(n > 62) n = 62;                          // like FTDI packets
+    // OMEGA_DRAWBRIDGE_LOSS=N: lose one packet in N during track reads (a USB link too slow)
+    static int loss = -1;
+    if(loss < 0) loss = getenv("OMEGA_DRAWBRIDGE_LOSS") ? atoi(getenv("OMEGA_DRAWBRIDGE_LOSS")) : 0;
+    if(loss > 0 && n == 62 && simOutCount - simOutHead > 200 && (simNext() % (uint32_t)loss) == 0){
+        simOutHead += n;                        // dropped
+        n = 0;
+        return 0;
+    }
     memcpy(data, simOut + simOutHead, (size_t)n);
     simOutHead += n;
     if(simOutHead == simOutCount) simOutHead = simOutCount = 0;
@@ -155,7 +163,7 @@ static void simInit(const char* adfPath){
 }
 
 static void simReport(void){
-    if(simMfm) fprintf(stderr, "DrawBridge sim: %d tracks read by the drive, %d read errors\n", dbTracksRead, dbReadErrors);
+    if(simMfm) fprintf(stderr, "DrawBridge sim: %d tracks read by the drive, %d read errors, %d incomplete\n", dbTracksRead, dbReadErrors, dbDataLost);
 }
 
 // OMEGA_WAV=file.wav: record the audio output (48 kHz stereo 16 bit)

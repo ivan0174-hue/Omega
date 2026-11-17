@@ -95,7 +95,10 @@ l'Amiga legge una traccia non ancora letta, `Floppy.c` chiama il lettore
 (dall'intestazione di un settore ripetuta) → giunzione spostata nello spazio
 tra i settori → sync allineati a 16 bit come fa Paula (preambolo `$AAAA`
 conservato, Kickstart 1.3 lo controlla) → se è una traccia AmigaDOS con
-settori rovinati, fino a 8 letture e unione dei settori buoni. Sola lettura
+settori rovinati, fino a 20 letture: ogni settore letto bene una volta viene
+tenuto e, quando ci sono tutti e 11, la traccia viene ricostruita pulita. Le
+letture incomplete (byte persi sulla USB) vengono contate (`dbDataLost`).
+Nel menu dischi c'è una prova diagnostica (DBTEST.TXT, DBRAW.BIN). Sola lettura
 (disco protetto da scrittura). Opzione in F5 (`drawbridge=off|df0|df1`).
 
 Prova senza hardware (versione headless):
@@ -106,7 +109,9 @@ OMEGA_SHOT_FILE=wb.ppm ./omega-headless kick13.rom
 ```
 
 simula l'Arduino con quel disco nel drive (protocollo vero, indice in un
-punto a caso, `OMEGA_DRAWBRIDGE_JITTER=N` perde un bit ogni N);
+punto a caso, `OMEGA_DRAWBRIDGE_JITTER=N` perde un bit ogni N,
+`OMEGA_DRAWBRIDGE_LOSS=N` perde un pacchetto USB ogni N; `OMEGA_LIVE2_AT`
+cambia disco);
 `OMEGA_FLOPPY_DEBUG=1` mostra ogni traccia letta.
 
 ## Limiti attuali
